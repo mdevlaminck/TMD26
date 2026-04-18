@@ -2,7 +2,7 @@
 //|                                      HOLO_EA_MT5_multisymbol_grid|
 //+------------------------------------------------------------------+
 #property copyright "OpenAI"
-#property version   "1.30"
+#property version   "1.40"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -27,7 +27,7 @@ enum ENUM_RISK_MODE
 input group "=== Master ==="
 input bool   InpEnableEA                = true;
 input ulong  InpMagic                   = 26040301;
-input ENUM_HOLO_LOG_LEVEL InpLogLevel   = LOG_INFO;
+input ENUM_HOLO_LOG_LEVEL InpLogLevel   = LOG_DEBUG;
 
 input group "=== Symbols ==="
 input string InpSymbols                 = "AUDCAD,AUDCHF,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURUSD,GBPCAD,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF,USDJPY";
@@ -42,6 +42,20 @@ input int    InpHolidayStartMonth       = 12;
 input int    InpHolidayStartDay         = 20;
 input int    InpHolidayEndMonth         = 1;
 input int    InpHolidayEndDay           = 10;
+
+input group "=== News Filter ==="
+input bool   InpUseNewsFilter           = true;
+input bool   InpNewsHighImpactOnly      = true;
+input int    InpNewsBlockMinutesBefore  = 60;
+input int    InpNewsBlockMinutesAfter   = 60;
+input bool   InpNewsBlockNewBaskets     = true;
+input bool   InpNewsBlockGridAdds       = true;
+input bool   InpNewsCloseProfitBefore   = true;
+input int    InpNewsCloseProfitHoursBefore = 24;
+input int    InpNewsRefreshSeconds      = 3600;
+input string InpBacktestNewsCsvFile     = "ff_news_utc.csv";
+input int    InpBacktestServerUtcOffsetHours = 2;
+input bool   InpBacktestUseEuropeanDST  = true;
 
 input group "=== Order Placement ==="
 input double InpLots                    = 0.10;
@@ -165,6 +179,13 @@ struct SymbolState
    bool   buySignal;
    bool   sellM15Ok;
    bool   buyM15Ok;
+   bool   newsBlocked;
+   bool   newsPostBlock;
+   bool   newsCloseWindow;
+   int    newsMinutesToEvent;
+   string newsCurrency;
+   string newsTitle;
+   datetime nextNewsTime;
    string buyReason;
    string sellReason;
 };
@@ -214,6 +235,20 @@ struct BasketState
 SymbolState g_states[];
 BasketState g_baskets[];
 
+struct NewsEvent
+{
+   datetime serverTime;
+   string   currency;
+   string   title;
+   int      importance;
+   string   source;
+};
+
+NewsEvent g_newsEvents[];
+datetime  g_newsLastRefresh = 0;
+bool      g_newsUsingCsv = false;
+string    g_newsStatusText = "OFF";
+
 void LogMsg(const ENUM_HOLO_LOG_LEVEL level, const string msg)
 {
    if((int)InpLogLevel >= (int)level)
@@ -223,6 +258,22 @@ void LogMsg(const ENUM_HOLO_LOG_LEVEL level, const string msg)
 string Trim(const string s)
 {
    string t = s;
+   StringTrimLeft(t);
+   StringTrimRight(t);
+
+   while(StringLen(t) > 0 && (StringGetCharacter(t, 0) == '"' || StringGetCharacter(t, 0) == '\''))
+      t = StringSubstr(t, 1);
+
+   while(StringLen(t) > 0)
+   {
+      int last = StringLen(t) - 1;
+      ushort ch = StringGetCharacter(t, last);
+      if(ch == '"' || ch == '\'')
+         t = StringSubstr(t, 0, last);
+      else
+         break;
+   }
+
    StringTrimLeft(t);
    StringTrimRight(t);
    return t;
@@ -305,6 +356,13 @@ bool ParseSymbols()
       g_states[idx].buySignal     = false;
       g_states[idx].sellM15Ok     = false;
       g_states[idx].buyM15Ok      = false;
+      g_states[idx].newsBlocked   = false;
+      g_states[idx].newsPostBlock = false;
+      g_states[idx].newsCloseWindow = false;
+      g_states[idx].newsMinutesToEvent = 999999;
+      g_states[idx].newsCurrency  = "";
+      g_states[idx].newsTitle     = "";
+      g_states[idx].nextNewsTime  = 0;
       g_states[idx].buyReason     = "-";
       g_states[idx].sellReason    = "-";
    }
@@ -1019,7 +1077,7 @@ bool CanOpenNewBasket(const string sym,const int direction)
    int active = ActiveBasketCount();
    if(active >= InpMaxConcurrentBaskets)
    {
-      LogMsg(LOG_DEBUG,
+      LogMsg(LOG_INFO,
              StringFormat("NEW_BASKET_BLOCK | %s | max baskets | active=%d max=%d",
                           sym, active, InpMaxConcurrentBaskets));
       return false;
@@ -1028,7 +1086,7 @@ bool CanOpenNewBasket(const string sym,const int direction)
    double otherDd = OtherBasketWorstDDPctBalance(sym);
    if(otherDd > InpMaxOtherBasketDDPctBal)
    {
-      LogMsg(LOG_DEBUG,
+      LogMsg(LOG_INFO,
              StringFormat("NEW_BASKET_BLOCK | %s | other DD | dd=%.2f max=%.2f",
                           sym, otherDd, InpMaxOtherBasketDDPctBal));
       return false;
@@ -1048,7 +1106,7 @@ bool CanOpenNewBasket(const string sym,const int direction)
 
    if(recoveryEligible)
    {
-      LogMsg(LOG_DEBUG,
+      LogMsg(LOG_INFO,
              StringFormat("RECOV_ENTRY_ALLOWED | %s | direction-aware stale recovery pass", sym));
    }
 
@@ -1387,6 +1445,485 @@ bool EvaluateSignalContext(const int idx, SignalContext &ctx)
    g_states[idx].sellReason = ctx.sellReason;
    g_states[idx].buyReason  = ctx.buyReason;
    return true;
+}
+
+
+bool NewsEnabled()
+{
+   return InpUseNewsFilter;
+}
+
+datetime ParseCsvDateTimeUtc(const string dateText, const string timeText)
+{
+   string d = Trim(dateText);
+   string t = Trim(timeText);
+
+   if(StringLen(d) < 10 || StringLen(t) < 4)
+      return 0;
+
+   if(StringSubstr(d, 4, 1) != "." || StringSubstr(d, 7, 1) != ".")
+      return 0;
+
+   int colon = StringFind(t, ":");
+   if(colon < 0)
+      return 0;
+
+   int year = (int)StringToInteger(StringSubstr(d, 0, 4));
+   int mon  = (int)StringToInteger(StringSubstr(d, 5, 2));
+   int day  = (int)StringToInteger(StringSubstr(d, 8, 2));
+   int hour = (int)StringToInteger(StringSubstr(t, 0, 2));
+   int min  = (int)StringToInteger(StringSubstr(t, colon + 1, 2));
+
+   if(year < 2000 || mon < 1 || mon > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || min < 0 || min > 59)
+      return 0;
+
+   MqlDateTime tm;
+   ZeroMemory(tm);
+   tm.year = year;
+   tm.mon  = mon;
+   tm.day  = day;
+   tm.hour = hour;
+   tm.min  = min;
+   tm.sec  = 0;
+
+   return StructToTime(tm);
+}
+
+int DaysInMonth(const int year, const int month)
+{
+   if(month == 2)
+   {
+      bool leap = ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0));
+      return (leap ? 29 : 28);
+   }
+   if(month == 4 || month == 6 || month == 9 || month == 11)
+      return 30;
+   return 31;
+}
+
+int LastSundayDay(const int year, const int month)
+{
+   int day = DaysInMonth(year, month);
+   while(day >= 1)
+   {
+      MqlDateTime tm;
+      ZeroMemory(tm);
+      tm.year = year;
+      tm.mon  = month;
+      tm.day  = day;
+      tm.hour = 12;
+      datetime dt = StructToTime(tm);
+      TimeToStruct(dt, tm);
+      if(tm.day_of_week == 0)
+         return day;
+      day--;
+   }
+   return 1;
+}
+
+bool IsEuropeanDstUtc(const datetime utcTime)
+{
+   if(!InpBacktestUseEuropeanDST || utcTime <= 0)
+      return false;
+
+   MqlDateTime tm;
+   TimeToStruct(utcTime, tm);
+
+   MqlDateTime startTm;
+   ZeroMemory(startTm);
+   startTm.year = tm.year;
+   startTm.mon  = 3;
+   startTm.day  = LastSundayDay(tm.year, 3);
+   startTm.hour = 1;
+
+   MqlDateTime endTm;
+   ZeroMemory(endTm);
+   endTm.year = tm.year;
+   endTm.mon  = 10;
+   endTm.day  = LastSundayDay(tm.year, 10);
+   endTm.hour = 1;
+
+   datetime startUtc = StructToTime(startTm);
+   datetime endUtc   = StructToTime(endTm);
+
+   return (utcTime >= startUtc && utcTime < endUtc);
+}
+
+datetime ConvertBacktestUtcToServer(const datetime utcTime)
+{
+   int offsetSeconds = InpBacktestServerUtcOffsetHours * 3600;
+   if(IsEuropeanDstUtc(utcTime))
+      offsetSeconds += 3600;
+   return utcTime + offsetSeconds;
+}
+
+void ResetNewsCache()
+{
+   ArrayResize(g_newsEvents, 0);
+   g_newsLastRefresh = 0;
+   g_newsUsingCsv = false;
+   g_newsStatusText = "OFF";
+}
+
+void AddNewsEvent(const datetime serverTime, const string currency, const string title, const int importance, const string source)
+{
+   if(serverTime <= 0 || currency == "")
+      return;
+
+   int n = ArraySize(g_newsEvents);
+   ArrayResize(g_newsEvents, n + 1);
+   g_newsEvents[n].serverTime  = serverTime;
+   g_newsEvents[n].currency    = currency;
+   g_newsEvents[n].title       = title;
+   g_newsEvents[n].importance  = importance;
+   g_newsEvents[n].source      = source;
+}
+
+bool LoadBacktestNewsFromCsv()
+{
+   ArrayResize(g_newsEvents, 0);
+
+   int handle = FileOpen(InpBacktestNewsCsvFile, FILE_READ | FILE_CSV | FILE_ANSI | FILE_COMMON, ',');
+   if(handle == INVALID_HANDLE)
+   {
+      g_newsStatusText = "CSV open fail";
+      LogMsg(LOG_ERROR, "news csv open failed: " + InpBacktestNewsCsvFile + " err=" + IntegerToString(GetLastError()));
+      return false;
+   }
+
+   datetime now = TimeTradeServer();
+   if(now <= 0)
+      now = TimeCurrent();
+
+   datetime keepFrom = now - MathMax(86400, InpNewsBlockMinutesAfter * 60 + 86400);
+   datetime keepTo   = now + MathMax((InpNewsCloseProfitHoursBefore + 24) * 3600, 7 * 86400);
+
+   while(!FileIsEnding(handle))
+   {
+      string dateText = FileReadString(handle);
+      if(FileIsEnding(handle) && dateText == "")
+         break;
+
+      string timeText = FileReadString(handle);
+      string currency = Trim(FileReadString(handle));
+      string impact   = Trim(FileReadString(handle));
+      string title    = Trim(FileReadString(handle));
+
+      while(!FileIsLineEnding(handle) && !FileIsEnding(handle))
+         FileReadString(handle);
+
+      if(currency == "" || title == "")
+         continue;
+      if(InpNewsHighImpactOnly && impact != "H")
+         continue;
+
+      datetime utcTime = ParseCsvDateTimeUtc(dateText, timeText);
+      if(utcTime <= 0)
+         continue;
+
+      datetime serverTime = ConvertBacktestUtcToServer(utcTime);
+      if(serverTime < keepFrom || serverTime > keepTo)
+         continue;
+
+      AddNewsEvent(serverTime, currency, title, 3, "CSV");
+   }
+
+   FileClose(handle);
+
+   g_newsUsingCsv = true;
+   g_newsLastRefresh = now;
+   g_newsStatusText = StringFormat("CSV HI %d", ArraySize(g_newsEvents));
+   LogMsg(LOG_INFO, StringFormat("news csv loaded events=%d file=%s", ArraySize(g_newsEvents), InpBacktestNewsCsvFile));
+   return (ArraySize(g_newsEvents) >= 0);
+}
+
+int BuildWatchedCurrencies(string &currencies[])
+{
+   ArrayResize(currencies, 0);
+   for(int i = 0; i < ArraySize(g_states); i++)
+   {
+      string c1 = BaseCurrency(g_states[i].symbol);
+      string c2 = QuoteCurrency(g_states[i].symbol);
+
+      bool has1 = false;
+      for(int k = 0; k < ArraySize(currencies); k++)
+         if(currencies[k] == c1)
+         {
+            has1 = true;
+            break;
+         }
+      if(!has1 && c1 != "")
+      {
+         int n = ArraySize(currencies);
+         ArrayResize(currencies, n + 1);
+         currencies[n] = c1;
+      }
+
+      bool has2 = false;
+      for(int k = 0; k < ArraySize(currencies); k++)
+         if(currencies[k] == c2)
+         {
+            has2 = true;
+            break;
+         }
+      if(!has2 && c2 != "")
+      {
+         int n = ArraySize(currencies);
+         ArrayResize(currencies, n + 1);
+         currencies[n] = c2;
+      }
+   }
+   return ArraySize(currencies);
+}
+
+bool LoadLiveNewsFromCalendar()
+{
+   ArrayResize(g_newsEvents, 0);
+
+   datetime now = TimeTradeServer();
+   if(now <= 0)
+      now = TimeCurrent();
+
+   datetime fromTime = now - MathMax(3600, InpNewsBlockMinutesAfter * 60 + 300);
+   datetime toTime   = now + MathMax((InpNewsCloseProfitHoursBefore + 24) * 3600,
+                                     MathMax(InpNewsBlockMinutesBefore * 60, 24 * 3600));
+
+   string currencies[];
+   BuildWatchedCurrencies(currencies);
+
+   for(int i = 0; i < ArraySize(currencies); i++)
+   {
+      MqlCalendarValue values[];
+      ResetLastError();
+      int count = CalendarValueHistory(values, fromTime, toTime, NULL, currencies[i]);
+      if(count < 0)
+      {
+         LogMsg(LOG_ERROR, StringFormat("CalendarValueHistory failed currency=%s err=%d", currencies[i], GetLastError()));
+         continue;
+      }
+
+      for(int v = 0; v < count; v++)
+      {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(values[v].event_id, ev))
+            continue;
+         if(InpNewsHighImpactOnly && ev.importance != CALENDAR_IMPORTANCE_HIGH)
+            continue;
+         AddNewsEvent(values[v].time, currencies[i], ev.name, (int)ev.importance, "CAL");
+      }
+   }
+
+   g_newsUsingCsv = false;
+   g_newsLastRefresh = now;
+   g_newsStatusText = StringFormat("LIVE HI %d", ArraySize(g_newsEvents));
+   LogMsg(LOG_INFO, StringFormat("live news loaded events=%d", ArraySize(g_newsEvents)));
+   return true;
+}
+
+void RefreshNewsCacheIfNeeded(const bool force = false)
+{
+   if(!NewsEnabled())
+   {
+      g_newsStatusText = "OFF";
+      return;
+   }
+
+   datetime now = TimeTradeServer();
+   if(now <= 0)
+      now = TimeCurrent();
+
+   if(!force && g_newsLastRefresh > 0 && (now - g_newsLastRefresh) < MathMax(30, InpNewsRefreshSeconds))
+      return;
+
+   if(MQLInfoInteger(MQL_TESTER))
+      LoadBacktestNewsFromCsv();
+   else
+      LoadLiveNewsFromCalendar();
+}
+
+bool IsNewsRelevantToSymbol(const string sym, const string currency)
+{
+   if(currency == "")
+      return false;
+   return (BaseCurrency(sym) == currency || QuoteCurrency(sym) == currency);
+}
+
+void UpdateSymbolNewsState(const int idx)
+{
+   if(idx < 0 || idx >= ArraySize(g_states))
+      return;
+
+   g_states[idx].newsBlocked = false;
+   g_states[idx].newsPostBlock = false;
+   g_states[idx].newsCloseWindow = false;
+   g_states[idx].newsMinutesToEvent = 999999;
+   g_states[idx].newsCurrency = "";
+   g_states[idx].newsTitle = "";
+   g_states[idx].nextNewsTime = 0;
+
+   if(!NewsEnabled())
+      return;
+
+   datetime now = TimeTradeServer();
+   if(now <= 0)
+      now = TimeCurrent();
+
+   int bestFutureMin = INT_MAX;
+   int bestPastMin = INT_MAX;
+   string sym = g_states[idx].symbol;
+
+   for(int i = 0; i < ArraySize(g_newsEvents); i++)
+   {
+      if(!IsNewsRelevantToSymbol(sym, g_newsEvents[i].currency))
+         continue;
+
+      int deltaMin = (int)((g_newsEvents[i].serverTime - now) / 60);
+      int absDelta = MathAbs(deltaMin);
+
+      if(deltaMin >= 0 && deltaMin <= InpNewsBlockMinutesBefore)
+      {
+         g_states[idx].newsBlocked = true;
+         if(deltaMin < bestFutureMin)
+         {
+            bestFutureMin = deltaMin;
+            g_states[idx].newsMinutesToEvent = deltaMin;
+            g_states[idx].newsCurrency = g_newsEvents[i].currency;
+            g_states[idx].newsTitle = g_newsEvents[i].title;
+            g_states[idx].nextNewsTime = g_newsEvents[i].serverTime;
+         }
+      }
+      else if(deltaMin < 0 && absDelta <= InpNewsBlockMinutesAfter)
+      {
+         g_states[idx].newsBlocked = true;
+         g_states[idx].newsPostBlock = true;
+         if(absDelta < bestPastMin)
+         {
+            bestPastMin = absDelta;
+            g_states[idx].newsMinutesToEvent = -absDelta;
+            g_states[idx].newsCurrency = g_newsEvents[i].currency;
+            g_states[idx].newsTitle = g_newsEvents[i].title;
+            g_states[idx].nextNewsTime = g_newsEvents[i].serverTime;
+         }
+      }
+
+      if(InpNewsCloseProfitBefore && deltaMin >= 0 && deltaMin <= InpNewsCloseProfitHoursBefore * 60)
+      {
+         g_states[idx].newsCloseWindow = true;
+         if(g_states[idx].nextNewsTime == 0 || g_newsEvents[i].serverTime < g_states[idx].nextNewsTime)
+         {
+            g_states[idx].newsMinutesToEvent = deltaMin;
+            g_states[idx].newsCurrency = g_newsEvents[i].currency;
+            g_states[idx].newsTitle = g_newsEvents[i].title;
+            g_states[idx].nextNewsTime = g_newsEvents[i].serverTime;
+         }
+      }
+      else if(!g_states[idx].newsBlocked && !g_states[idx].newsCloseWindow && deltaMin >= 0)
+      {
+         if(g_states[idx].nextNewsTime == 0 || g_newsEvents[i].serverTime < g_states[idx].nextNewsTime)
+         {
+            g_states[idx].newsMinutesToEvent = deltaMin;
+            g_states[idx].newsCurrency = g_newsEvents[i].currency;
+            g_states[idx].newsTitle = g_newsEvents[i].title;
+            g_states[idx].nextNewsTime = g_newsEvents[i].serverTime;
+         }
+      }
+   }
+}
+
+void UpdateAllSymbolNewsStates()
+{
+   for(int i = 0; i < ArraySize(g_states); i++)
+      UpdateSymbolNewsState(i);
+}
+
+bool IsNewsBlockedForNewEntries(const int idx)
+{
+   if(!NewsEnabled() || !InpNewsBlockNewBaskets)
+      return false;
+   if(idx < 0 || idx >= ArraySize(g_states))
+      return false;
+   return g_states[idx].newsBlocked;
+}
+
+bool IsNewsBlockedForGridAdds(const int idx)
+{
+   if(!NewsEnabled() || !InpNewsBlockGridAdds)
+      return false;
+   if(idx < 0 || idx >= ArraySize(g_states))
+      return false;
+   return g_states[idx].newsBlocked;
+}
+
+string NewsStateText(const int idx)
+{
+   if(idx < 0 || idx >= ArraySize(g_states) || !NewsEnabled())
+      return "-";
+
+   if(g_states[idx].newsBlocked)
+   {
+      int mins = MathAbs(g_states[idx].newsMinutesToEvent);
+      if(g_states[idx].newsPostBlock)
+         return "POST " + IntegerToString(mins) + "m";
+      return "BLK " + IntegerToString(mins) + "m";
+   }
+
+   if(g_states[idx].newsCloseWindow && g_states[idx].newsMinutesToEvent >= 0)
+   {
+      if(g_states[idx].newsMinutesToEvent >= 60)
+         return "CLS " + DoubleToString((double)g_states[idx].newsMinutesToEvent / 60.0, 1) + "h";
+      return "CLS " + IntegerToString(g_states[idx].newsMinutesToEvent) + "m";
+   }
+
+   if(g_states[idx].nextNewsTime > 0 && g_states[idx].newsMinutesToEvent >= 0)
+   {
+      if(g_states[idx].newsMinutesToEvent >= 60)
+         return DoubleToString((double)g_states[idx].newsMinutesToEvent / 60.0, 1) + "h";
+      return IntegerToString(g_states[idx].newsMinutesToEvent) + "m";
+   }
+
+   return "-";
+}
+
+color NewsStateColor(const int idx)
+{
+   if(idx < 0 || idx >= ArraySize(g_states) || !NewsEnabled())
+      return tmdSilver;
+   if(g_states[idx].newsBlocked)
+      return tmdRed;
+   if(g_states[idx].newsCloseWindow)
+      return tmdOrange;
+   if(g_states[idx].nextNewsTime > 0)
+      return tmdSilver;
+   return tmdSilver;
+}
+
+void ManageNewsRisk()
+{
+   if(!NewsEnabled() || !InpNewsCloseProfitBefore)
+      return;
+
+   SyncBasketStates();
+
+   for(int i = 0; i < ArraySize(g_baskets); i++)
+   {
+      if(!g_baskets[i].active)
+         continue;
+
+      int sidx = g_baskets[i].symbolIndex;
+      if(sidx < 0 || sidx >= ArraySize(g_states))
+         continue;
+      if(!g_states[sidx].newsCloseWindow)
+         continue;
+
+      double pnl = BasketNetProfit(g_baskets[i].symbol);
+      if(pnl > 0.0)
+      {
+         string reason = "news profit close";
+         if(g_states[sidx].newsCurrency != "")
+            reason += " " + g_states[sidx].newsCurrency;
+         CloseBasket(g_baskets[i].symbol, reason, false);
+      }
+   }
 }
 
 ulong FindPendingOrder(const string sym, ENUM_ORDER_TYPE type)
@@ -1793,6 +2330,8 @@ void ManageGridBasket()
       return;
 
    SyncBasketStates();
+   RefreshNewsCacheIfNeeded();
+   UpdateAllSymbolNewsStates();
 
    bool hasStaleBasket = HasStaleBasket(24.0);
    if(hasStaleBasket)
@@ -1887,7 +2426,7 @@ void ManageGridBasket()
 
       if(holdForStaleRecovery)
       {
-         LogMsg(LOG_DEBUG,
+         LogMsg(LOG_INFO,
                 StringFormat("STALE_RECOVERY_HOLD | basket=%s | pnl=%.2f | ageH=%.1f | mode=runner",
                              sym, pnl, basketAgeHours));
       }
@@ -1963,7 +2502,16 @@ void ManageGridBasket()
          adversePips = (ask - g_baskets[bi].lastAddPrice) / pip;
 
       if(adversePips >= InpGridGapPips)
-         OpenGridLevel(bi);
+      {
+         if(IsNewsBlockedForGridAdds(bi))
+         {
+            LogMsg(LOG_INFO, StringFormat("grid add blocked by news %s %s", g_baskets[bi].symbol, NewsStateText(bi)));
+         }
+         else
+         {
+            OpenGridLevel(bi);
+         }
+      }
    }
 
    LogExposureSnapshot("GRID_MGMT");
@@ -2065,6 +2613,8 @@ void ManageEntries()
    }
 
    SyncBasketStates();
+   RefreshNewsCacheIfNeeded();
+   UpdateAllSymbolNewsStates();
 
    for(int i = 0; i < ArraySize(g_states); i++)
    {
@@ -2073,6 +2623,12 @@ void ManageEntries()
          continue;
 
       string sym = g_states[i].symbol;
+
+      if(IsNewsBlockedForNewEntries(i))
+      {
+         CancelPendingsForSymbol(sym);
+         continue;
+      }
 
       if(ctx.spreadPips > InpMaxSpreadPips)
       {
@@ -2349,7 +2905,7 @@ void CreatePanel()
 
    CreatePanelLabel("G4L", 230, 76, 8, C'70,90,110', "GRID STATE");
    CreatePanelLabel("G4V", 575, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G5L", 230, 92, 8, C'70,90,110', "WINDOW / COOLDOWN");
+   CreatePanelLabel("G5L", 230, 92, 8, C'70,90,110', "WINDOW / CD / NEWS");
    CreatePanelLabel("G5V", 575, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
    CreatePanelLabel("G6L", 230, 108, 8, C'70,90,110', "PENDINGS / SYMBOLS");
    CreatePanelLabel("G6V", 575, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
@@ -2370,7 +2926,7 @@ void CreatePanel()
    CreatePanelLabel("COL2", 235, 162, 8, C'70,90,110', "PEND");
    CreatePanelLabel("COL3", 305, 162, 8, C'70,90,110', "BUY");
    CreatePanelLabel("COL4", 385, 162, 8, C'70,90,110', "SELL");
-   CreatePanelLabel("COL5", 470, 162, 8, C'70,90,110', "CD");
+   CreatePanelLabel("COL5", 470, 162, 8, C'70,90,110', "NEWS");
    CreatePanelLabel("COL6", 540, 162, 8, C'70,90,110', "M15");
    CreatePanelLabel("COL7", 615, 162, 8, C'70,90,110', "SPR");
    CreatePanelLabel("COL8", 685, 162, 8, C'70,90,110', "ATR%");
@@ -2659,6 +3215,8 @@ void UpdatePanel()
    string cdTxt = (IsTradingWindow() ? "OPEN" : "CLOSED");
    if(IsCooldownActive())
       cdTxt += " / COOLDOWN";
+   if(NewsEnabled())
+      cdTxt += " / " + g_newsStatusText;
    SetPanelText("G5V", cdTxt, IsCooldownActive() ? tmdOrange : (IsTradingWindow() ? tmdGreen : tmdRed));
 
    SetPanelText("G6V", IntegerToString(PendingCount()) + " / " + IntegerToString(ArraySize(g_states)), tmdSilver);
@@ -2708,7 +3266,7 @@ void UpdatePanel()
       string pnd       = IntegerToString(PendingCount(sym));
       string buy       = (g_states[i].buySignal  ? "READY" : FitPanelText(g_states[i].buyReason,  9));
       string sell      = (g_states[i].sellSignal ? "READY" : FitPanelText(g_states[i].sellReason, 9));
-      string cd        = (IsCooldownActive() ? "YES" : "-");
+      string cd        = NewsStateText(i);
       string m15       = StringFormat("S:%s B:%s",
                                       (g_states[i].sellM15Ok ? "Y" : "N"),
                                       (g_states[i].buyM15Ok  ? "Y" : "N"));
@@ -2733,6 +3291,11 @@ void UpdatePanel()
       {
          state = "BUY";
          stateClr = Color_LO;
+      }
+      else if(IsNewsBlockedForNewEntries(i))
+      {
+         state = "NEWS";
+         stateClr = tmdRed;
       }
       else if(g_states[i].spreadPips > InpMaxSpreadPips)
       {
@@ -2782,7 +3345,7 @@ void UpdatePanel()
       SetPanelText("R_PND_" + IntegerToString(i), pnd, PendingCount(sym) > 0 ? tmdOrange : tmdSilver);
       SetPanelText("R_BUY_" + IntegerToString(i), buy, g_states[i].buySignal ? Color_LO : tmdSilver);
       SetPanelText("R_SEL_" + IntegerToString(i), sell, g_states[i].sellSignal ? Color_HO : tmdSilver);
-      SetPanelText("R_CD_" + IntegerToString(i), cd, IsCooldownActive() ? tmdOrange : tmdSilver);
+      SetPanelText("R_CD_" + IntegerToString(i), cd, NewsStateColor(i));
       SetPanelText("R_M15_" + IntegerToString(i), m15, tmdSilver);
       SetPanelText("R_SPR_" + IntegerToString(i), spr, g_states[i].spreadPips > InpMaxSpreadPips ? tmdRed : tmdSilver);
       SetPanelText("R_ATR_" + IntegerToString(i), atr, g_states[i].rangeAtrPct >= InpMinRangeAtrPct ? tmdGreen : tmdSilver);
@@ -2838,11 +3401,6 @@ void RefreshVisualLayer(const bool force = false)
 
 int OnInit()
 {
-   MqlCalendarValue values[];
-   int count = CalendarValueHistory(values, TimeCurrent()-3600, TimeCurrent()+3600);
-   
-   Print("NEWS EVENTS FOUND: ", count);
-   
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(10);
 
@@ -2854,6 +3412,8 @@ int OnInit()
    StyleChart();
    CreatePanel();
    RefreshAllSymbolStates();
+   RefreshNewsCacheIfNeeded(true);
+   UpdateAllSymbolNewsStates();
    UpdateCooldownFromHistoryIfNeeded();
    RefreshVisualLayer(true);
    EventSetTimer(1);
@@ -2872,6 +3432,8 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    RefreshAllSymbolStates();
+   RefreshNewsCacheIfNeeded();
+   UpdateAllSymbolNewsStates();
    UpdateCooldownFromHistoryIfNeeded();
    RefreshVisualLayer();
 }
@@ -2879,7 +3441,10 @@ void OnTimer()
 void OnTick()
 {
    RefreshAllSymbolStates();
+   RefreshNewsCacheIfNeeded();
+   UpdateAllSymbolNewsStates();
    UpdateCooldownFromHistoryIfNeeded();
+   ManageNewsRisk();
    ManageEntries();
    ManageGridBasket();
    ManageStops();
