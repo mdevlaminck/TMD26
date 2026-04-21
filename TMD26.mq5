@@ -42,6 +42,8 @@ input int    InpHolidayStartMonth       = 12;
 input int    InpHolidayStartDay         = 20;
 input int    InpHolidayEndMonth         = 1;
 input int    InpHolidayEndDay           = 10;
+input bool InpUseFridayStopHour = true;
+input int  InpFridayStopHour    = 16;   
 
 input group "=== Order Placement ==="
 input double InpLots                    = 0.10;
@@ -347,9 +349,11 @@ bool IsTradingWindow()
    MqlDateTime tm;
    TimeToStruct(TimeTradeServer(), tm);
 
+   // Block full July
    if(InpBlockJuly && tm.mon == 7)
       return false;
 
+   // Block year-end holiday period
    if(InpBlockYearEndHoliday)
    {
       bool inStart = (tm.mon == InpHolidayStartMonth && tm.day >= InpHolidayStartDay);
@@ -359,9 +363,18 @@ bool IsTradingWindow()
    }
 
    int h = tm.hour;
+
+   // Friday early stop
+   // tm.day_of_week: 0=Sunday, 1=Monday, ..., 5=Friday, 6=Saturday
+   if(InpUseFridayStopHour && tm.day_of_week == 5)
+   {
+      if(h >= InpFridayStopHour)
+         return false;
+   }
+
+   // Normal trading hours
    return (h >= InpServerStartHour && h < InpServerEndHour);
 }
-
 bool IsCooldownActive()
 {
    return (g_cooldownUntil > TimeTradeServer());
