@@ -30,13 +30,14 @@ input ulong  InpMagic                   = 26040301;
 input ENUM_HOLO_LOG_LEVEL InpLogLevel   = LOG_INFO;
 
 input group "=== Symbols ==="
-input string InpSymbols                 = "AUDCAD,AUDCHF,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURUSD,GBPCAD,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF,USDJPY";
+// original list "AUDCAD,AUDCHF,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURUSD,GBPCAD,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF,USDJPY";
+input string InpSymbols = "AUDCAD,AUDCHF,AUDNZD,CADCHF,CADJPY,EURAUD,EURCAD,EURCHF,EURGBP,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF";
 
 input group "=== Trading Window ==="
 input int    InpServerStartHour         = 8;
 input int    InpServerEndHour           = 22;
 input int    InpCooldownMinutesAfterSL  = 5;
-input bool   InpBlockJuly               = true;
+input bool   InpBlockJuly               = false;
 input bool   InpBlockYearEndHoliday     = true;
 input int    InpHolidayStartMonth       = 12;
 input int    InpHolidayStartDay         = 20;
@@ -44,6 +45,7 @@ input int    InpHolidayEndMonth         = 1;
 input int    InpHolidayEndDay           = 10;
 input bool InpUseFridayStopHour = true;
 input int  InpFridayStopHour    = 16;   
+input string InpBlockedEntryHours = "9,14,21";
 
 input group "=== Order Placement ==="
 input double InpLots                    = 0.10;
@@ -52,6 +54,20 @@ input bool   InpCancelOppositeOnFill    = true;
 input bool   InpReplacePendingOnChange  = true;
 input int    InpEntryBufferPoints       = 0;
 input int    InpMinStopDistancePips     = 5;
+
+input int    InpPendingMinLifeSeconds   = 0;
+input double InpPendingRecalcMinPips    = 2.0;
+
+input group "=== Evaluation Timing ==="
+input bool            InpEntryOnlyOnNewBar       = true;
+input ENUM_TIMEFRAMES InpEntryEvalTF             = PERIOD_M15;
+
+input bool            InpGridOnlyOnNewBar        = true;
+input ENUM_TIMEFRAMES InpGridEvalTF              = PERIOD_M5;
+
+// Keep false for now. Basket exits should stay fast.
+input bool            InpBasketExitOnlyOnNewBar  = false;
+input ENUM_TIMEFRAMES InpBasketExitTF            = PERIOD_M1;
 
 input group "=== Lot Sizing ==="
 input ENUM_RISK_MODE InpRiskMode        = RISK_LOW;
@@ -72,18 +88,108 @@ input bool   InpRejectIfDailyExtremeBroken = true;
 
 input group "=== Grid Basket ==="
 input bool   InpUseGridBasket           = true;
-input int    InpGridGapPips             = 20;
-input int    InpGridMaxLevels           = 10;
-input double InpGridLotMultiplier       = 1.00;
+input int    InpGridGapPips             = 40;
+input double InpGridGapMultiplier = 1.50;
+input int    InpGridGapMaxPips = 120;
+input int    InpGridMaxLevels           = 4;
+input double InpGridLotMultiplier       = 1.05;
 input double InpGridTakeProfitPctPrice  = 0.10;   
 input bool   InpGridUseAnchorHardStop   = false;
 input bool   InpGridUseBasketTrail      = true;
 input double InpGridTrailArmPctTarget   = 60.0;
 input double InpGridTrailRetracePctPeak = 35.0;
-input int    InpBasketProfitCloseMinOrders = 8;
+input int    InpBasketProfitCloseMinOrders = 3;
+input double InpStaleCloseAgeStartHours = 8;
+input double InpStaleCloseAgeFullDecayHours = 36;
+input double InpStaleClosePctAtStart = 0.55;
+input double InpStaleClosePctAtMaxAge = 0.2;
+input double InpLargeBasketClosePctAtMinOrders = 0.55;
+input double InpLargeBasketClosePctAtMaxLevels = 0.2;
+input double InpRecoveryCloseMinMoney = 0.5;
 
-input int    InpMaxConcurrentBaskets    = 5;
-input double InpMaxOtherBasketDDPctBal  = 10.00;
+// --- Basket escape / breakeven logic ---
+input bool   InpUseBasketBreakevenClose      = true;
+input int    InpBasketBE_MinOrders           = 2;
+input double InpBasketBE_MinAgeHours         = 3.0;
+input double InpBasketBE_MinMoney            = 1;
+
+input int    InpDeepBasketBE_MinOrders       = 3;
+input double InpDeepBasketBE_MinAgeHours     = 6.0;
+input double InpDeepBasketBE_MinMoney        = 0.00;
+
+
+input bool   InpScaleAgeExitLossByRisk      = true;
+input double InpExitLossRiskReferencePct    = 0.10;
+input bool   InpUseAbsoluteMaxLevelTimeExit = true;
+input double InpAbsoluteMaxLevelExitHours   = 336.0;
+
+// --- Max-level controlled loss ladder ---
+input bool   InpUseMaxLevelControlledExit    = true;
+
+// Ladder step 1: early escape
+input double InpMaxLevelExitAge1Hours        = 12.0;
+input double InpMaxLevelExitLoss1PctBal      = 0.25;
+
+// Ladder step 2: normal controlled escape
+input double InpMaxLevelExitAge2Hours        = 24.0;
+input double InpMaxLevelExitLoss2PctBal      = 0.50;
+
+// Ladder step 3: old basket escape
+input double InpMaxLevelExitAge3Hours        = 48.0;
+input double InpMaxLevelExitLoss3PctBal      = 0.90;
+
+// Ladder step 4: very old basket escape
+input double InpMaxLevelExitAge4Hours        = 72.0;
+input double InpMaxLevelExitLoss4PctBal      = 1.25;
+
+
+// --- L2 aged basket loss exit ---
+// Handles old 2-order baskets that never reach L3/L4.
+input bool   InpUseL2AgeExit              = true;
+input double InpL2AgeExitAge1Hours        = 48.0;
+input double InpL2AgeExitLoss1PctBal      = 0.00;   
+
+input double InpL2AgeExitAge2Hours        = 96.0;
+input double InpL2AgeExitLoss2PctBal      = 0.50;   
+
+input double InpL2AgeExitAge3Hours        = 144.0;
+input double InpL2AgeExitLoss3PctBal      = 0.75;
+
+input double InpL2AgeExitAge4Hours        = 216.0;
+input double InpL2AgeExitLoss4PctBal      = 1.25;
+
+input double InpL2AgeExitAge5Hours        = 288;
+input double InpL2AgeExitLoss5PctBal      = 1.75;
+
+input bool   InpL2AgeExitStartsCooldown   = true;
+
+
+// --- L3 aged basket loss exit ---
+// Handles dangerous 3-order baskets before they reach max level.
+input bool   InpUseL3AgeExit              = true;
+input double InpL3AgeExitAge1Hours        = 24.0;
+input double InpL3AgeExitLoss1PctBal      = 0.2;
+
+input double InpL3AgeExitAge2Hours        = 48.0;
+input double InpL3AgeExitLoss2PctBal      = 0.40;
+
+input double InpL3AgeExitAge3Hours        = 72.0;
+input double InpL3AgeExitLoss3PctBal      = 0.6;
+
+input double InpL3AgeExitAge4Hours        = 96;
+input double InpL3AgeExitLoss4PctBal      = 1;
+
+input bool   InpL3AgeExitStartsCooldown   = true;
+
+// Optional final hard exit to avoid endless baskets
+input bool   InpUseMaxLevelHardTimeExit      = true;
+input double InpMaxLevelHardExitAgeHours     = 120.0;
+input double InpMaxLevelHardExitMaxLossPctBal = 2.00;
+
+input bool   InpMaxLevelExitStartsCooldown   = true;
+
+input int    InpMaxConcurrentBaskets    = 8;
+input double InpMaxOtherBasketDDPctBal  = 15.00;
 input bool   InpBlockSharedCurrencies   = true;
 input bool   InpUseCorrelationGate      = true;
 input int    InpCorrelationBars         = 96;
@@ -106,7 +212,7 @@ input bool   Show_Yesterday_Lines       = true;
 input bool   Show_DaySeparator          = true;
 input bool   Show_AreaOfInterest        = true;
 input bool   Show_PendingMarkers        = true;
-input bool   InpShowPanel               = true;
+input bool   InpShowPanel               = false;
 input bool   InpStyleChart              = true;
 
 input color  Color_HO                   = clrMaroon;
@@ -169,6 +275,9 @@ struct SymbolState
    bool   buyM15Ok;
    string buyReason;
    string sellReason;
+datetime lastEntryEvalBarTime;
+datetime lastGridEvalBarTime;
+datetime lastBasketExitBarTime;
 };
 
 struct SignalContext
@@ -215,6 +324,32 @@ struct BasketState
 
 SymbolState g_states[];
 BasketState g_baskets[];
+bool g_blockedEntryHours[24];
+
+bool IsNewBarForSymbolTF(const string sym,
+                         const ENUM_TIMEFRAMES tf,
+                         datetime &lastBarTime)
+{
+   datetime currentBarTime = iTime(sym, tf, 0);
+
+   if(currentBarTime <= 0)
+      return false;
+
+   // First call: allow evaluation immediately.
+   if(lastBarTime == 0)
+   {
+      lastBarTime = currentBarTime;
+      return true;
+   }
+
+   if(currentBarTime != lastBarTime)
+   {
+      lastBarTime = currentBarTime;
+      return true;
+   }
+
+   return false;
+}
 
 void LogMsg(const ENUM_HOLO_LOG_LEVEL level, const string msg)
 {
@@ -257,7 +392,34 @@ double GetRiskPercent()
    }
    return InpRiskMedPct;
 }
+double ExitLossRiskScale()
+{
+   if(!InpScaleAgeExitLossByRisk)
+      return 1.0;
 
+   if(InpExitLossRiskReferencePct <= 0.0)
+      return 1.0;
+
+   double riskPct = GetRiskPercent();
+
+   if(riskPct <= 0.0)
+      return 1.0;
+
+   return riskPct / InpExitLossRiskReferencePct;
+}
+
+
+double AcceptedExitLossMoney(const double lossPctBal)
+{
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   if(bal <= 0.0)
+      return 0.0;
+
+   double scale = ExitLossRiskScale();
+
+   return -bal * lossPctBal / 100.0 * scale;
+}
 int GetStateIndexBySymbol(const string sym)
 {
    for(int i = 0; i < ArraySize(g_states); i++)
@@ -309,6 +471,9 @@ bool ParseSymbols()
       g_states[idx].buyM15Ok      = false;
       g_states[idx].buyReason     = "-";
       g_states[idx].sellReason    = "-";
+      g_states[idx].lastEntryEvalBarTime  = 0;
+      g_states[idx].lastGridEvalBarTime   = 0;
+      g_states[idx].lastBasketExitBarTime = 0;
    }
    return (ArraySize(g_states) > 0);
 }
@@ -966,7 +1131,7 @@ bool HasHighCorrelationConflict(const string sym, const int dir)
    if(!InpUseCorrelationGate)
       return false;
 
-   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, dir, 24.0);
+   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, dir, InpStaleCloseAgeStartHours);
 
    for(int i = 0; i < ArraySize(g_baskets); i++)
    {
@@ -979,7 +1144,7 @@ bool HasHighCorrelationConflict(const string sym, const int dir)
       double absCorr    = MathAbs(signedCorr);
 
       if(recoveryEligible &&
-         BasketAgeHours(i) >= 24.0 &&
+         BasketAgeHours(i) >= InpStaleCloseAgeStartHours &&
          IsRecoveryCompatiblePair(sym, dir, g_baskets[i].symbol, g_baskets[i].direction))
          continue;
 
@@ -994,7 +1159,7 @@ bool HasSharedCurrencyConflict(const string sym, const int dir)
    if(!InpBlockSharedCurrencies)
       return false;
 
-   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, dir, 24.0);
+   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, dir, InpStaleCloseAgeStartHours );
 
    for(int i = 0; i < ArraySize(g_baskets); i++)
    {
@@ -1008,7 +1173,7 @@ bool HasSharedCurrencyConflict(const string sym, const int dir)
          continue;
 
       if(recoveryEligible &&
-         BasketAgeHours(i) >= 24.0 &&
+         BasketAgeHours(i) >= InpStaleCloseAgeStartHours  &&
          IsRecoveryCompatiblePair(sym, dir, otherSym, otherDir))
          continue;
 
@@ -1021,7 +1186,7 @@ bool HasSharedCurrencyConflict(const string sym, const int dir)
 
 bool CanOpenNewBasket(const string sym,const int direction)
 {
-   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, direction, 24.0);
+   bool recoveryEligible = IsRecoveryEligibleNewBasket(sym, direction, InpStaleCloseAgeStartHours  );
 
    if(HasOpenPosition(sym))
    {
@@ -1454,21 +1619,79 @@ bool HasOpenPosition(const string sym = "", int posType = -1)
    }
    return false;
 }
+double PipSizeForSymbol(const string sym)
+{
+   int idx = GetStateIndexBySymbol(sym);
+   if(idx >= 0)
+      return g_states[idx].pip;
 
-void CancelPendingByType(const string sym, ENUM_ORDER_TYPE type)
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   int digits   = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+   if(digits == 5 || digits == 3)
+      return point * 10.0;
+
+   return point;
+}
+
+
+int PendingOrderAgeSeconds(const ulong ticket)
+{
+   if(ticket == 0 || !OrderSelect(ticket))
+      return 999999;
+
+   datetime setupTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+   if(setupTime <= 0)
+      return 999999;
+
+   datetime now = TimeCurrent();
+   return (int)(now - setupTime);
+}
+
+
+bool PendingTooYoungToCancel(const ulong ticket)
+{
+   if(InpPendingMinLifeSeconds <= 0)
+      return false;
+
+   int ageSec = PendingOrderAgeSeconds(ticket);
+   return (ageSec >= 0 && ageSec < InpPendingMinLifeSeconds);
+}
+void CancelPendingByType(const string sym, ENUM_ORDER_TYPE type, bool forceCancel = false)
 {
    ulong ticket = FindPendingOrder(sym, type);
-   if(ticket > 0)
+   if(ticket <= 0)
+      return;
+
+   if(!forceCancel && PendingTooYoungToCancel(ticket))
    {
-      if(!trade.OrderDelete(ticket))
-         LogMsg(LOG_ERROR, StringFormat("failed deleting pending %s ticket=%I64u ret=%d", sym, ticket, trade.ResultRetcode()));
+      if(InpLogLevel >= LOG_DEBUG)
+      {
+         LogMsg(LOG_DEBUG,
+                StringFormat("keep fresh pending %s type=%d ticket=%I64u age=%d sec",
+                             sym,
+                             (int)type,
+                             ticket,
+                             PendingOrderAgeSeconds(ticket)));
+      }
+
+      return;
+   }
+
+   if(!trade.OrderDelete(ticket))
+   {
+      LogMsg(LOG_ERROR,
+             StringFormat("failed deleting pending %s ticket=%I64u ret=%d",
+                          sym,
+                          ticket,
+                          trade.ResultRetcode()));
    }
 }
 
-void CancelPendingsForSymbol(const string sym)
+void CancelPendingsForSymbol(const string sym, bool forceCancel = false)
 {
-   CancelPendingByType(sym, ORDER_TYPE_BUY_STOP);
-   CancelPendingByType(sym, ORDER_TYPE_SELL_STOP);
+   CancelPendingByType(sym, ORDER_TYPE_BUY_STOP, forceCancel);
+   CancelPendingByType(sym, ORDER_TYPE_SELL_STOP, forceCancel);
 }
 
 void CancelAllPendings()
@@ -1515,10 +1738,19 @@ bool EnsurePendingOrder(const string sym, ENUM_ORDER_TYPE type, double entry, do
       double oldSl    = NormalizePrice(sym, OrderGetDouble(ORDER_SL));
       double oldLots  = NormalizeLots(sym, OrderGetDouble(ORDER_VOLUME_INITIAL));
 
-      bool entryChanged = (MathAbs(oldEntry - entry) > point);
-      bool slChanged    = (MathAbs(oldSl - sl) > point);
+      double pip = PipSizeForSymbol(sym);
+      double minRecalcDist = InpPendingRecalcMinPips * pip;
+      
+      bool entryChanged = (MathAbs(oldEntry - entry) >= minRecalcDist);
+      bool slChanged    = (MathAbs(oldSl - sl) >= minRecalcDist);
       bool lotsChanged  = (MathAbs(oldLots - lots) > (volStep * 0.5));
-
+      
+      // If the pending is still fresh, do not modify/recreate it immediately.
+      // This prevents cancel/modify churn in the first 120 seconds.
+      if(PendingTooYoungToCancel(existing))
+         return true;
+      
+      // If price/SL changed by less than the recalculation threshold, keep the order.
       if(!entryChanged && !slChanged && !lotsChanged)
          return true;
 
@@ -1660,6 +1892,134 @@ double GridTrailArmPriceDistance(const int basketIdx)
    return targetDistance * InpGridTrailArmPctTarget / 100.0;
 }
 
+double Clamp01(const double v)
+{
+   if(v < 0.0) return 0.0;
+   if(v > 1.0) return 1.0;
+   return v;
+}
+
+double Lerp(const double a, const double b, const double t)
+{
+   return a + (b - a) * Clamp01(t);
+}
+
+double BasketProfitAtPrice(const string sym, const double closePrice)
+{
+   if(sym == "" || closePrice <= 0.0)
+      return 0.0;
+
+   double pnl = 0.0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != sym)
+         continue;
+
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
+      double lots = PositionGetDouble(POSITION_VOLUME);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double calcPnl = 0.0;
+
+      if(OrderCalcProfit(orderType, sym, lots, openPrice, closePrice, calcPnl))
+         pnl += calcPnl;
+
+      pnl += PositionGetDouble(POSITION_SWAP);
+   }
+
+   return pnl;
+}
+
+double BasketTargetProfitMoney(const int basketIdx)
+{
+   if(basketIdx < 0 || basketIdx >= ArraySize(g_baskets))
+      return 0.0;
+   if(!g_baskets[basketIdx].active || g_baskets[basketIdx].symbol == "")
+      return 0.0;
+
+   double targetPrice = GridTargetPrice(basketIdx);
+   if(targetPrice <= 0.0)
+      return 0.0;
+
+   return MathMax(0.0, BasketProfitAtPrice(g_baskets[basketIdx].symbol, targetPrice));
+}
+
+double StaleAgeRecoveryPct(const double ageHours)
+{
+   if(ageHours <= InpStaleCloseAgeStartHours)
+      return InpStaleClosePctAtStart;
+
+   double endH = MathMax(InpStaleCloseAgeStartHours + 1.0, InpStaleCloseAgeFullDecayHours);
+   double t = (ageHours - InpStaleCloseAgeStartHours) / (endH - InpStaleCloseAgeStartHours);
+   return Lerp(InpStaleClosePctAtStart, InpStaleClosePctAtMaxAge, t);
+}
+
+double BasketSizeRecoveryPct(const int basketOrders)
+{
+   if(InpBasketProfitCloseMinOrders <= 0)
+      return InpLargeBasketClosePctAtMinOrders;
+
+   int maxOrders = MathMax(InpBasketProfitCloseMinOrders + 1, InpGridMaxLevels);
+   if(basketOrders <= InpBasketProfitCloseMinOrders)
+      return InpLargeBasketClosePctAtMinOrders;
+
+   double t = (double)(basketOrders - InpBasketProfitCloseMinOrders)
+            / (double)MathMax(1, maxOrders - InpBasketProfitCloseMinOrders);
+   return Lerp(InpLargeBasketClosePctAtMinOrders, InpLargeBasketClosePctAtMaxLevels, t);
+}
+
+double BasketRecoveryClosePnl(const int basketIdx, const bool staleMode)
+{
+   if(basketIdx < 0 || basketIdx >= ArraySize(g_baskets))
+      return InpRecoveryCloseMinMoney;
+   if(!g_baskets[basketIdx].active || g_baskets[basketIdx].symbol == "")
+      return InpRecoveryCloseMinMoney;
+
+   double targetMoney = BasketTargetProfitMoney(basketIdx);
+   if(targetMoney <= 0.0)
+      return InpRecoveryCloseMinMoney;
+
+   double sizePct = BasketSizeRecoveryPct(BasketPositionCount(g_baskets[basketIdx].symbol));
+   double pct = sizePct;
+
+   if(staleMode)
+   {
+      double agePct = StaleAgeRecoveryPct(BasketAgeHours(basketIdx));
+      pct = 0.5 * (agePct + sizePct);
+   }
+
+   return MathMax(InpRecoveryCloseMinMoney, targetMoney * MathMax(0.0, pct));
+}
+
+double GlobalRecoveryClosePnl()
+{
+   double sumReq = 0.0;
+   int staleCount = 0;
+
+   for(int i = 0; i < ArraySize(g_baskets); i++)
+   {
+      if(!g_baskets[i].active)
+         continue;
+      if(BasketAgeHours(i) < InpStaleCloseAgeStartHours)
+         continue;
+
+      sumReq += BasketRecoveryClosePnl(i, true);
+      staleCount++;
+   }
+
+   if(staleCount <= 0)
+      return 0.0;
+
+   double avgReq = sumReq / (double)staleCount;
+   return MathMax(InpRecoveryCloseMinMoney, 0.5 * (sumReq + avgReq));
+}
+
 void StartCooldown(const string reasonTag)
 {
    g_cooldownUntil = TimeTradeServer() + InpCooldownMinutesAfterSL * 60;
@@ -1799,6 +2159,327 @@ bool OpenGridLevel(const int basketIdx)
    }
    return ok;
 }
+double MaxLevelAllowedLossPctByAge(const double basketAgeHours)
+{
+   double lossPct = -1.0;
+
+   if(basketAgeHours >= InpMaxLevelExitAge1Hours)
+      lossPct = InpMaxLevelExitLoss1PctBal;
+
+   if(basketAgeHours >= InpMaxLevelExitAge2Hours)
+      lossPct = InpMaxLevelExitLoss2PctBal;
+
+   if(basketAgeHours >= InpMaxLevelExitAge3Hours)
+      lossPct = InpMaxLevelExitLoss3PctBal;
+
+   if(basketAgeHours >= InpMaxLevelExitAge4Hours)
+      lossPct = InpMaxLevelExitLoss4PctBal;
+
+   return lossPct;
+}
+double AllowedLossPct_L2_ByAge(const double basketAgeHours)
+{
+   double lossPct = -1.0;
+
+   if(basketAgeHours >= InpL2AgeExitAge1Hours)
+      lossPct = InpL2AgeExitLoss1PctBal;
+
+   if(basketAgeHours >= InpL2AgeExitAge2Hours)
+      lossPct = InpL2AgeExitLoss2PctBal;
+
+   if(basketAgeHours >= InpL2AgeExitAge3Hours)
+      lossPct = InpL2AgeExitLoss3PctBal;
+
+   if(basketAgeHours >= InpL2AgeExitAge4Hours)
+      lossPct = InpL2AgeExitLoss4PctBal;
+
+   if(basketAgeHours >= InpL2AgeExitAge5Hours)
+      lossPct = InpL2AgeExitLoss5PctBal;
+
+   return lossPct;
+}
+
+
+double AllowedLossPct_L3_ByAge(const double basketAgeHours)
+{
+   double lossPct = -1.0;
+
+   if(basketAgeHours >= InpL3AgeExitAge1Hours)
+      lossPct = InpL3AgeExitLoss1PctBal;
+
+   if(basketAgeHours >= InpL3AgeExitAge2Hours)
+      lossPct = InpL3AgeExitLoss2PctBal;
+
+   if(basketAgeHours >= InpL3AgeExitAge3Hours)
+      lossPct = InpL3AgeExitLoss3PctBal;
+
+   if(basketAgeHours >= InpL3AgeExitAge4Hours)
+      lossPct = InpL3AgeExitLoss4PctBal;
+
+   return lossPct;
+}
+bool ManageL2L3AgeExit(const int basketIdx)
+{
+   if(basketIdx < 0 || basketIdx >= ArraySize(g_baskets))
+      return false;
+
+   if(!g_baskets[basketIdx].active || g_baskets[basketIdx].symbol == "")
+      return false;
+
+   string sym = g_baskets[basketIdx].symbol;
+
+   if(!HasOpenPosition(sym))
+      return false;
+
+   double pnl            = BasketNetProfit(sym);       // includes swap
+   int    basketOrders   = BasketPositionCount(sym);
+   int    basketLevels   = g_baskets[basketIdx].levels;
+   double basketAgeHours = BasketAgeHours(basketIdx);
+   double bal            = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   // ------------------------------------------------------------
+   // L3 aged exit
+   // Only for 3-order baskets that have NOT reached max level yet.
+   // If max level is reached, let your max-level ladder handle it.
+   // ------------------------------------------------------------
+   if(InpUseL3AgeExit)
+   {
+      bool isL3Basket =
+         (basketOrders >= 3 || basketLevels >= 3) &&
+         (basketOrders < InpGridMaxLevels && basketLevels < InpGridMaxLevels);
+
+      if(isL3Basket)
+      {
+         double allowedLossPct = AllowedLossPct_L3_ByAge(basketAgeHours);
+
+         if(allowedLossPct >= 0.0)
+         {
+            double acceptedLossMoney = AcceptedExitLossMoney(allowedLossPct);
+
+            if(pnl >= acceptedLossMoney)
+            {
+               LogMsg(LOG_INFO,
+                      StringFormat("L3_AGE_EXIT | %s | pnl=%.2f | acceptedLoss=%.2f | lossPct=%.2f%% | ageH=%.1f | orders=%d | levels=%d",
+                                   sym,
+                                   pnl,
+                                   acceptedLossMoney,
+                                   allowedLossPct,
+                                   basketAgeHours,
+                                   basketOrders,
+                                   basketLevels));
+
+               CloseBasket(sym,
+                           "L3 aged basket exit",
+                           InpL3AgeExitStartsCooldown);
+
+               return true;
+            }
+         }
+      }
+   }
+
+   // ------------------------------------------------------------
+   // L2 aged exit
+   // Only for 2-order baskets.
+   // This fixes old L2 baskets like EURCHF/EURGBP in your last test.
+   // ------------------------------------------------------------
+   if(InpUseL2AgeExit)
+   {
+      bool isL2Basket =
+         (basketOrders == 2 || basketLevels == 2) &&
+         basketOrders < 3 &&
+         basketLevels < 3;
+
+      if(isL2Basket)
+      {
+         double allowedLossPct = AllowedLossPct_L2_ByAge(basketAgeHours);
+
+         if(allowedLossPct >= 0.0)
+         {
+            double acceptedLossMoney = AcceptedExitLossMoney(allowedLossPct);
+
+            if(pnl >= acceptedLossMoney)
+            {
+               LogMsg(LOG_INFO,
+                      StringFormat("L2_AGE_EXIT | %s | pnl=%.2f | acceptedLoss=%.2f | lossPct=%.2f%% | ageH=%.1f | orders=%d | levels=%d",
+                                   sym,
+                                   pnl,
+                                   acceptedLossMoney,
+                                   allowedLossPct,
+                                   basketAgeHours,
+                                   basketOrders,
+                                   basketLevels));
+
+               CloseBasket(sym,
+                           "L2 aged basket exit",
+                           InpL2AgeExitStartsCooldown);
+
+               return true;
+            }
+         }
+      }
+   }
+
+   return false;
+}
+bool ManageBasketEscapeClose(const int basketIdx)
+{
+   if(basketIdx < 0 || basketIdx >= ArraySize(g_baskets))
+      return false;
+
+   if(!g_baskets[basketIdx].active || g_baskets[basketIdx].symbol == "")
+      return false;
+
+   string sym = g_baskets[basketIdx].symbol;
+
+   if(!HasOpenPosition(sym))
+      return false;
+
+   if(InpBasketExitOnlyOnNewBar)
+   {
+      int sidx = GetStateIndexBySymbol(sym);
+   
+      if(sidx >= 0)
+      {
+         if(!IsNewBarForSymbolTF(sym,
+                                 InpBasketExitTF,
+                                 g_states[sidx].lastBasketExitBarTime))
+         {
+            return false;
+         }
+      }
+   }
+   double pnl             = BasketNetProfit(sym);       // includes swap
+   int    basketOrders    = BasketPositionCount(sym);
+   double basketAgeHours  = BasketAgeHours(basketIdx);
+   int    basketLevels    = g_baskets[basketIdx].levels;
+   
+    // L2/L3 aged exits.
+   // This handles old baskets that do not reach max level.
+   if(ManageL2L3AgeExit(basketIdx))
+      return true;
+
+   // ------------------------------------------------------------
+   // 1) Normal basket breakeven / small-profit close
+   // Example: L2+ baskets should not wait for full grid TP forever.
+   // ------------------------------------------------------------
+   if(InpUseBasketBreakevenClose)
+   {
+      if(basketOrders >= InpBasketBE_MinOrders &&
+         basketAgeHours >= InpBasketBE_MinAgeHours &&
+         pnl >= InpBasketBE_MinMoney)
+      {
+         LogMsg(LOG_INFO,
+                StringFormat("BASKET_BE_CLOSE | %s | pnl=%.2f | ageH=%.1f | orders=%d | levels=%d | req=%.2f",
+                             sym, pnl, basketAgeHours, basketOrders, basketLevels, InpBasketBE_MinMoney));
+
+         CloseBasket(sym, "basket breakeven/small profit close", false);
+         return true;
+      }
+
+      // Deeper basket: escape at true BE or tiny profit.
+      if(basketOrders >= InpDeepBasketBE_MinOrders &&
+         basketAgeHours >= InpDeepBasketBE_MinAgeHours &&
+         pnl >= InpDeepBasketBE_MinMoney)
+      {
+         LogMsg(LOG_INFO,
+                StringFormat("DEEP_BASKET_BE_CLOSE | %s | pnl=%.2f | ageH=%.1f | orders=%d | levels=%d | req=%.2f",
+                             sym, pnl, basketAgeHours, basketOrders, basketLevels, InpDeepBasketBE_MinMoney));
+
+         CloseBasket(sym, "deep basket breakeven escape", false);
+         return true;
+      }
+   }
+
+   // ------------------------------------------------------------
+   // 2) Max-level controlled loss LADDER
+   // Once max grid level is reached, the EA should stop trying
+   // to win big and start trying to escape efficiently.
+   // The older the basket becomes, the more loss we are willing
+   // to accept to prevent a catastrophic end-of-test close.
+   // ------------------------------------------------------------
+   if(InpUseMaxLevelControlledExit)
+   {
+      bool atMaxLevel = (basketLevels >= InpGridMaxLevels || basketOrders >= InpGridMaxLevels);
+   
+      if(atMaxLevel)
+      {
+         double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   
+         // Get allowed loss % based on basket age.
+         double allowedLossPct = MaxLevelAllowedLossPctByAge(basketAgeHours);
+   
+         if(allowedLossPct > 0.0)
+         {
+            double acceptedLossMoney = AcceptedExitLossMoney(allowedLossPct);
+   
+            if(pnl >= acceptedLossMoney)
+            {
+               LogMsg(LOG_INFO,
+                      StringFormat("MAX_LEVEL_LOSS_LADDER_EXIT | %s | pnl=%.2f | acceptedLoss=%.2f | allowedLossPct=%.2f%% | ageH=%.1f | orders=%d | levels=%d",
+                                   sym,
+                                   pnl,
+                                   acceptedLossMoney,
+                                   allowedLossPct,
+                                   basketAgeHours,
+                                   basketOrders,
+                                   basketLevels));
+   
+               CloseBasket(sym,
+                           "max-level loss ladder exit",
+                           InpMaxLevelExitStartsCooldown);
+   
+               return true;
+            }
+         }
+   
+         // Optional final hard time exit.
+         // This prevents a basket from surviving for weeks.
+         // It only closes if the basket has recovered to within
+         // the maximum hard-exit loss limit.
+         if(InpUseMaxLevelHardTimeExit && basketAgeHours >= InpMaxLevelHardExitAgeHours)
+         {
+            double hardExitLossMoney = AcceptedExitLossMoney(InpMaxLevelHardExitMaxLossPctBal);
+   
+            if(pnl >= hardExitLossMoney)
+            {
+               LogMsg(LOG_INFO,
+                      StringFormat("MAX_LEVEL_HARD_TIME_EXIT | %s | pnl=%.2f | maxAllowedLoss=%.2f | ageH=%.1f | orders=%d | levels=%d",
+                                   sym,
+                                   pnl,
+                                   hardExitLossMoney,
+                                   basketAgeHours,
+                                   basketOrders,
+                                   basketLevels));
+   
+               CloseBasket(sym,
+                           "max-level hard time exit",
+                           InpMaxLevelExitStartsCooldown);
+   
+               return true;
+            }
+         }
+      }
+   }
+   if(InpUseAbsoluteMaxLevelTimeExit && basketAgeHours >= InpAbsoluteMaxLevelExitHours)
+   {
+      LogMsg(LOG_INFO,
+             StringFormat("ABSOLUTE_MAX_LEVEL_TIME_EXIT | %s | pnl=%.2f | ageH=%.1f | orders=%d | levels=%d",
+                          sym,
+                          pnl,
+                          basketAgeHours,
+                          basketOrders,
+                          basketLevels));
+   
+      CloseBasket(sym,
+                  "absolute max-level time exit",
+                  InpMaxLevelExitStartsCooldown);
+   
+      return true;
+   }
+
+   return false;
+}
 
 void ManageGridBasket()
 {
@@ -1807,15 +2488,16 @@ void ManageGridBasket()
 
    SyncBasketStates();
 
-   bool hasStaleBasket = HasStaleBasket(24.0);
+   bool hasStaleBasket = HasStaleBasket(InpStaleCloseAgeStartHours);
    if(hasStaleBasket)
    {
       double globalRecoveryPnl = BasketNetProfit();
-      if(globalRecoveryPnl > 0.0)
+      double globalRecoveryReq = GlobalRecoveryClosePnl();
+      if(globalRecoveryPnl >= globalRecoveryReq)
       {
          LogMsg(LOG_INFO,
-                StringFormat("STALE_RECOVERY_CLOSE_ALL | globalPnl=%.2f", globalRecoveryPnl));
-         CloseAllBaskets("global pnl > 0 with stale basket recovery", false);
+                StringFormat("STALE_RECOVERY_CLOSE_ALL | globalPnl=%.2f | req=%.2f", globalRecoveryPnl, globalRecoveryReq));
+         CloseAllBaskets("global pnl >= blended stale recovery target", false);
          return;
       }
    }
@@ -1864,36 +2546,45 @@ void ManageGridBasket()
          }
       }
       double basketAgeHours = BasketAgeHours(bi);
-      bool staleBasketManaged   = (basketAgeHours >= 24.0);
-      bool recoveryRunner       = IsRecoveryRunnerBasket(bi, 24.0);
+      
+      // First try to escape bad/deep baskets before normal TP/trailing logic.
+      // This is especially important with limited grid levels.
+      if(ManageBasketEscapeClose(bi))
+         continue;
+      
+      bool staleBasketManaged   = (basketAgeHours >= InpStaleCloseAgeStartHours);
+      bool recoveryRunner       = IsRecoveryRunnerBasket(bi, InpStaleCloseAgeStartHours);
       bool holdForStaleRecovery = (hasStaleBasket && recoveryRunner);
+      
+      double staleCloseReq = BasketRecoveryClosePnl(bi, true);
+      double largeBasketReq = BasketRecoveryClosePnl(bi, false);
 
-      if(staleBasketManaged && pnl > 0.0)
+      if(staleBasketManaged && pnl >= staleCloseReq)
       {
          LogMsg(LOG_INFO,
-                StringFormat("STALE_BASKET_PROFIT_CLOSE | basket=%s | pnl=%.2f | ageH=%.1f",
-                             sym, pnl, basketAgeHours));
-         CloseBasket(sym, "stale basket > 24h and in profit", false);
+                StringFormat("STALE_BASKET_PROFIT_CLOSE | basket=%s | pnl=%.2f | req=%.2f | ageH=%.1f | orders=%d",
+                             sym, pnl, staleCloseReq, basketAgeHours, basketOrders));
+         CloseBasket(sym, "stale basket >= blended recovery target", false);
          continue;
       }
 
       if(InpBasketProfitCloseMinOrders > 0 && basketOrders >= InpBasketProfitCloseMinOrders)
       {
-         if(globalPnl > 0.0)
+         if(globalPnl >= largeBasketReq)
          {
             LogMsg(LOG_INFO,
-                   StringFormat("GLOBAL_PROFIT_FLUSH | basket=%s | basketOrders=%d | basketPnl=%.2f | globalPnl=%.2f",
-                                sym, basketOrders, pnl, globalPnl));
-            CloseAllBaskets("global pnl > 0 with large basket", false);
+                   StringFormat("GLOBAL_PROFIT_FLUSH | basket=%s | basketOrders=%d | basketPnl=%.2f | globalPnl=%.2f | req=%.2f",
+                                sym, basketOrders, pnl, globalPnl, largeBasketReq));
+            CloseAllBaskets("global pnl >= blended large-basket recovery target", false);
             return;
          }
 
-         if(!holdForStaleRecovery && pnl > 0.0)
+         if(!holdForStaleRecovery && pnl >= largeBasketReq)
          {
             LogMsg(LOG_INFO,
-                   StringFormat("BASKET_PROFIT_FLUSH | basket=%s | basketOrders=%d | basketPnl=%.2f",
-                                sym, basketOrders, pnl));
-            CloseBasket(sym, "basket pnl > 0 with large basket", false);
+                   StringFormat("BASKET_PROFIT_FLUSH | basket=%s | basketOrders=%d | basketPnl=%.2f | req=%.2f",
+                                sym, basketOrders, pnl, largeBasketReq));
+            CloseBasket(sym, "basket pnl >= blended recovery target with large basket", false);
             continue;
          }
       }
@@ -1975,8 +2666,29 @@ void ManageGridBasket()
       else if(g_baskets[bi].direction == POSITION_TYPE_SELL)
          adversePips = (ask - g_baskets[bi].lastAddPrice) / pip;
 
-      if(adversePips >= InpGridGapPips)
+      double requiredGap = NextGridGapPips(bi);
+      bool allowGridAdd = true;
+      
+      if(InpGridOnlyOnNewBar)
+      {
+         int sidx = GetStateIndexBySymbol(sym);
+      
+         if(sidx >= 0)
+         {
+            allowGridAdd = IsNewBarForSymbolTF(sym,
+                                               InpGridEvalTF,
+                                               g_states[sidx].lastGridEvalBarTime);
+         }
+         else
+         {
+            allowGridAdd = false;
+         }
+      }
+      
+      if(allowGridAdd && adversePips >= requiredGap)
+      {
          OpenGridLevel(bi);
+      }
    }
 
    LogExposureSnapshot("GRID_MGMT");
@@ -2079,24 +2791,65 @@ void ManageEntries()
 
    SyncBasketStates();
 
+   // Block only NEW entries during blocked hours.
+   // Existing baskets are still managed elsewhere.
+   if(IsBlockedEntryHour())
+   {
+      CancelAllPendings();
+
+      if(InpLogLevel >= LOG_DEBUG)
+      {
+         MqlDateTime dt;
+         TimeToStruct(TimeCurrent(), dt);
+
+         LogMsg(LOG_DEBUG,
+                StringFormat("ENTRY BLOCKED | server hour=%d | blockedHours=%s",
+                             dt.hour,
+                             InpBlockedEntryHours));
+      }
+
+      return;
+   }
+
    for(int i = 0; i < ArraySize(g_states); i++)
    {
+      string sym = g_states[i].symbol;
+
+      // ------------------------------------------------------------
+      // Entry logic only once per selected bar, e.g. M15.
+      // This prevents real-tick flicker from constantly creating /
+      // cancelling pending orders inside the same candle.
+      // ------------------------------------------------------------
+      if(InpEntryOnlyOnNewBar)
+      {
+         if(!IsNewBarForSymbolTF(sym,
+                                 InpEntryEvalTF,
+                                 g_states[i].lastEntryEvalBarTime))
+         {
+            continue;
+         }
+      }
+
       SignalContext ctx;
       if(!EvaluateSignalContext(i, ctx))
+      {
+         // Because entries are now only evaluated on new bars,
+         // you may choose to cancel old pendings here or not.
+         // I prefer cancelling when context is invalid on the new bar.
+         CancelPendingsForSymbol(sym, true);
          continue;
-
-      string sym = g_states[i].symbol;
+      }
 
       if(ctx.spreadPips > InpMaxSpreadPips)
       {
-         CancelPendingsForSymbol(sym);
+         CancelPendingsForSymbol(sym, true);
          continue;
       }
 
       if(HasOpenPosition(sym))
       {
          if(InpCancelOppositeOnFill)
-            CancelPendingsForSymbol(sym);
+            CancelPendingsForSymbol(sym, true);
          continue;
       }
 
@@ -2107,9 +2860,10 @@ void ManageEntries()
       bool buyOk  = (ctx.buySignal  && basketAllowedBuy);
 
       if(!sellOk)
-         CancelPendingByType(sym, ORDER_TYPE_SELL_STOP);
+         CancelPendingByType(sym, ORDER_TYPE_SELL_STOP, false);
+
       if(!buyOk)
-         CancelPendingByType(sym, ORDER_TYPE_BUY_STOP);
+         CancelPendingByType(sym, ORDER_TYPE_BUY_STOP, false);
 
       double sellEntry = g_states[i].hoH1 + InpEntryBufferPoints * g_states[i].point;
       double buyEntry  = g_states[i].loH1 - InpEntryBufferPoints * g_states[i].point;
@@ -2121,9 +2875,20 @@ void ManageEntries()
       double buyLots  = GetInitialEntryLots(i, ORDER_TYPE_BUY_STOP, buyEntry);
 
       if(sellOk)
-         EnsurePendingOrder(sym, ORDER_TYPE_SELL_STOP, sellEntry, pendingSellSL, sellLots, "HOLO SellStop");
+         EnsurePendingOrder(sym,
+                            ORDER_TYPE_SELL_STOP,
+                            sellEntry,
+                            pendingSellSL,
+                            sellLots,
+                            "HOLO SellStop");
+
       if(buyOk)
-         EnsurePendingOrder(sym, ORDER_TYPE_BUY_STOP, buyEntry, pendingBuySL, buyLots, "HOLO BuyStop");
+         EnsurePendingOrder(sym,
+                            ORDER_TYPE_BUY_STOP,
+                            buyEntry,
+                            pendingBuySL,
+                            buyLots,
+                            "HOLO BuyStop");
    }
 }
 
@@ -2849,8 +3614,59 @@ void RefreshVisualLayer(const bool force = false)
    ChartRedraw(0);
 }
 
+double NextGridGapPips(const int basketIdx)
+{
+   int level = g_baskets[basketIdx].levels; 
+   // level 1 means next add is L2
+
+   double gap = InpGridGapPips * MathPow(InpGridGapMultiplier, MathMax(0, level - 1));
+   return MathMin(gap, InpGridGapMaxPips);
+}
+void ParseBlockedEntryHours()
+{
+   for(int h = 0; h < 24; h++)
+      g_blockedEntryHours[h] = false;
+
+   string s = InpBlockedEntryHours;
+   StringReplace(s, " ", "");
+
+   if(s == "")
+      return;
+
+   string parts[];
+   int count = StringSplit(s, ',', parts);
+
+   for(int i = 0; i < count; i++)
+   {
+      if(parts[i] == "")
+         continue;
+
+      int hour = (int)StringToInteger(parts[i]);
+
+      if(hour >= 0 && hour <= 23)
+         g_blockedEntryHours[hour] = true;
+      else
+         PrintFormat("Invalid blocked entry hour ignored: %s", parts[i]);
+   }
+}
+
+
+bool IsBlockedEntryHour()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+
+   int hour = dt.hour;
+
+   if(hour < 0 || hour > 23)
+      return false;
+
+   return g_blockedEntryHours[hour];
+}
 int OnInit()
 {
+   
+   ParseBlockedEntryHours();
    MqlCalendarValue values[];
    int count = CalendarValueHistory(values, TimeCurrent()-3600, TimeCurrent()+3600);
    
