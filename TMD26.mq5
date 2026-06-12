@@ -31,21 +31,25 @@ input ENUM_HOLO_LOG_LEVEL InpLogLevel   = LOG_INFO;
 
 input group "=== Symbols ==="
 // original list "AUDCAD,AUDCHF,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURUSD,GBPCAD,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF,USDJPY";
-input string InpSymbols = "AUDCAD,AUDCHF,AUDNZD,CADCHF,CADJPY,EURAUD,EURCAD,EURCHF,EURGBP,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF";
+// AP list AUDCAD,AUDCHF,AUDNZD,CADCHF,CADJPY,EURAUD,EURCAD,EURCHF,EURGBP,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF
+input string InpSymbols = "EURAUD,NZDCAD";
 
 input group "=== Trading Window ==="
-input int    InpServerStartHour         = 8;
-input int    InpServerEndHour           = 22;
+input int    InpServerStartHour         = 1;
+input int    InpServerEndHour           = 23;
 input int    InpCooldownMinutesAfterSL  = 5;
 input bool   InpBlockJuly               = false;
-input bool   InpBlockYearEndHoliday     = true;
+input bool   InpBlockYearEndHoliday     = false;
 input int    InpHolidayStartMonth       = 12;
 input int    InpHolidayStartDay         = 20;
 input int    InpHolidayEndMonth         = 1;
 input int    InpHolidayEndDay           = 10;
 input bool InpUseFridayStopHour = true;
 input int  InpFridayStopHour    = 16;   
-input string InpBlockedEntryHours = "9,14,21";
+
+input string InpBlockedEntryHours = "6";          // InpBlockedEntryHours Global block, applies to all symbols. Best result from test B.
+input string InpPairBlockedEntryHours = "EURAUD=2;NZDCAD=20";       // InpPairBlockedEntryHours Optional. Format: "EURAUD=2;NZDCAD=20". Applies on all days.
+input string InpPairDayBlockedEntryHours = "EURAUD:4=14";    // InpPairDayBlockedEntryHours Optional. Format: "EURAUD:4=14;NZDCAD:1,3=6". Day: 1=Mon ... 5=Fri.
 
 input group "=== Order Placement ==="
 input double InpLots                    = 0.10;
@@ -70,10 +74,10 @@ input bool            InpBasketExitOnlyOnNewBar  = false;
 input ENUM_TIMEFRAMES InpBasketExitTF            = PERIOD_M1;
 
 input group "=== Lot Sizing ==="
-input ENUM_RISK_MODE InpRiskMode        = RISK_LOW;
+input ENUM_RISK_MODE InpRiskMode        = RISK_HIGH;
 input double InpRiskLowPct              = 0.10;
 input double InpRiskMedPct              = 0.20;
-input double InpRiskHighPct             = 0.30;
+input double InpRiskHighPct             = 0.50;
 input bool   InpUseSLBasedLot           = true;
 input double InpFallbackLot             = 0.10;
 
@@ -2791,29 +2795,32 @@ void ManageEntries()
 
    SyncBasketStates();
 
-   // Block only NEW entries during blocked hours.
-   // Existing baskets are still managed elsewhere.
-   if(IsBlockedEntryHour())
-   {
-      CancelAllPendings();
-
-      if(InpLogLevel >= LOG_DEBUG)
-      {
-         MqlDateTime dt;
-         TimeToStruct(TimeCurrent(), dt);
-
-         LogMsg(LOG_DEBUG,
-                StringFormat("ENTRY BLOCKED | server hour=%d | blockedHours=%s",
-                             dt.hour,
-                             InpBlockedEntryHours));
-      }
-
-      return;
-   }
-
+   
    for(int i = 0; i < ArraySize(g_states); i++)
    {
       string sym = g_states[i].symbol;
+      // Block only NEW entries/pending orders during blocked hours.
+      // Existing baskets are still managed elsewhere.
+      // Pair-specific blocking must be inside this symbol loop, otherwise
+      // one blocked pair would cancel entries for all other symbols.
+      string blockReason = "";
+      if(IsBlockedEntryForSymbol(sym, blockReason))
+      {
+         CancelPendingsForSymbol(sym, true);
+      
+         if(InpLogLevel >= LOG_DEBUG)
+         {
+            LogMsg(LOG_DEBUG,
+                   StringFormat("ENTRY BLOCKED | %s | %s | globalHours=%s | pairHours=%s | pairDayHours=%s",
+                                sym,
+                                blockReason,
+                                InpBlockedEntryHours,
+                                InpPairBlockedEntryHours,
+                                InpPairDayBlockedEntryHours));
+         }
+      
+         continue;
+      }
 
       // ------------------------------------------------------------
       // Entry logic only once per selected bar, e.g. M15.
@@ -3621,6 +3628,155 @@ double NextGridGapPips(const int basketIdx)
 
    double gap = InpGridGapPips * MathPow(InpGridGapMultiplier, MathMax(0, level - 1));
    return MathMin(gap, InpGridGapMaxPips);
+}
+bool CsvIntListContains(string csv, const int value)
+{
+   StringReplace(csv, " ", "");
+   if(csv == "")
+      return false;
+
+   string parts[];
+   int count = StringSplit(csv, ',', parts);
+
+   for(int i = 0; i < count; i++)
+   {
+      if(parts[i] == "")
+         continue;
+
+      int v = (int)StringToInteger(parts[i]);
+      if(v == value)
+         return true;
+   }
+
+   return false;
+}
+
+bool SymbolMatchesBlockingRule(const string sym, const string ruleSym)
+{
+   // Exact match is safest. The second condition allows common broker suffixes,
+   // e.g. EURAUD.a still matches EURAUD.
+   if(sym == ruleSym)
+      return true;
+
+   if(StringLen(ruleSym) == 6 && StringFind(sym, ruleSym) == 0)
+      return true;
+
+   return false;
+}
+
+bool IsPairBlockedByHourRules(const string sym, const int hour)
+{
+   string rules = InpPairBlockedEntryHours;
+   StringReplace(rules, " ", "");
+
+   if(rules == "")
+      return false;
+
+   string entries[];
+   int count = StringSplit(rules, ';', entries);
+
+   for(int i = 0; i < count; i++)
+   {
+      string rule = entries[i];
+      if(rule == "")
+         continue;
+
+      int eq = StringFind(rule, "=");
+      if(eq <= 0)
+      {
+         PrintFormat("Invalid pair blocked entry rule ignored: %s", rule);
+         continue;
+      }
+
+      string ruleSym = StringSubstr(rule, 0, eq);
+      string hours   = StringSubstr(rule, eq + 1);
+
+      if(SymbolMatchesBlockingRule(sym, ruleSym) && CsvIntListContains(hours, hour))
+         return true;
+   }
+
+   return false;
+}
+
+bool IsPairBlockedByDayHourRules(const string sym, const int dayOfWeek, const int hour)
+{
+   string rules = InpPairDayBlockedEntryHours;
+   StringReplace(rules, " ", "");
+
+   if(rules == "")
+      return false;
+
+   string entries[];
+   int count = StringSplit(rules, ';', entries);
+
+   for(int i = 0; i < count; i++)
+   {
+      string rule = entries[i];
+      if(rule == "")
+         continue;
+
+      int eq = StringFind(rule, "=");
+      if(eq <= 0)
+      {
+         PrintFormat("Invalid pair-day blocked entry rule ignored: %s", rule);
+         continue;
+      }
+
+      string left  = StringSubstr(rule, 0, eq);      // SYMBOL:days
+      string hours = StringSubstr(rule, eq + 1);     // hours
+
+      int colon = StringFind(left, ":");
+      if(colon <= 0)
+      {
+         PrintFormat("Invalid pair-day blocked entry rule ignored: %s", rule);
+         continue;
+      }
+
+      string ruleSym = StringSubstr(left, 0, colon);
+      string days    = StringSubstr(left, colon + 1);
+
+      if(!SymbolMatchesBlockingRule(sym, ruleSym))
+         continue;
+
+      if(CsvIntListContains(days, dayOfWeek) && CsvIntListContains(hours, hour))
+         return true;
+   }
+
+   return false;
+}
+
+bool IsBlockedEntryForSymbol(const string sym, string &reason)
+{
+   reason = "";
+
+   MqlDateTime dt;
+   TimeToStruct(TimeTradeServer(), dt);
+
+   int hour = dt.hour;
+   int dow  = dt.day_of_week; // 0=Sunday, 1=Monday, ..., 5=Friday, 6=Saturday
+
+   if(hour < 0 || hour > 23)
+      return false;
+
+   if(g_blockedEntryHours[hour])
+   {
+      reason = StringFormat("global blocked hour %d", hour);
+      return true;
+   }
+
+   if(IsPairBlockedByHourRules(sym, hour))
+   {
+      reason = StringFormat("pair blocked hour %s hour %d", sym, hour);
+      return true;
+   }
+
+   if(IsPairBlockedByDayHourRules(sym, dow, hour))
+   {
+      reason = StringFormat("pair/day blocked hour %s day %d hour %d", sym, dow, hour);
+      return true;
+   }
+
+   return false;
 }
 void ParseBlockedEntryHours()
 {
