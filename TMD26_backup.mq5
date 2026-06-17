@@ -1,15 +1,15 @@
+﻿//+------------------------------------------------------------------+
+//|                                      HOLO_EA_MT5_multisymbol_grid|
 //+------------------------------------------------------------------+
-//|                                      TMD26_EA_MT5_multisymbol_grid|
-//+------------------------------------------------------------------+
-#property copyright "MDV"
-#property version   "1.33"
+#property copyright "OpenAI"
+#property version   "1.31"
 #property strict
 
 #include <Trade/Trade.mqh>
 
 CTrade trade;
 
-enum ENUM_TMD_LOG_LEVEL
+enum ENUM_HOLO_LOG_LEVEL
 {
    LOG_NONE = 0,
    LOG_ERROR,
@@ -34,9 +34,11 @@ enum ENUM_COMMISSION_MODE
 input group "=== Master ==="
 input bool   InpEnableEA                = true;
 input ulong  InpMagic                   = 26040301;
-input ENUM_TMD_LOG_LEVEL InpLogLevel   = LOG_INFO;
+input ENUM_HOLO_LOG_LEVEL InpLogLevel   = LOG_INFO;
 
 input group "=== Symbols ==="
+// original list "AUDCAD,AUDCHF,AUDNZD,AUDUSD,CADCHF,CADJPY,CHFJPY,EURAUD,EURCAD,EURCHF,EURGBP,EURUSD,GBPCAD,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF,USDJPY";
+// AP list AUDCAD,AUDCHF,AUDNZD,CADCHF,CADJPY,EURAUD,EURCAD,EURCHF,EURGBP,GBPCHF,NZDCAD,NZDCHF,NZDUSD,USDCAD,USDCHF
 input string InpSymbols = "EURAUD,NZDCAD,AUDCAD";
 input bool   InpAutoDetectBrokerSymbols = true;   // Finds broker symbols such as m.EURAUD, EURAUD.a, EURAUD.r automatically.
 input string InpBrokerSymbolPrefix      = "";     // Optional forced prefix, e.g. "m.". Leave empty for auto-detect.
@@ -58,6 +60,8 @@ input int  InpFridayStopHour    = 16;
 input string InpBlockedEntryHours = "6";          // InpBlockedEntryHours Global block, applies to all symbols. Best result from test B.
 input string InpPairBlockedEntryHours = "EURAUD=2;NZDCAD=20";       // InpPairBlockedEntryHours Optional. Format: "EURAUD=2;NZDCAD=20". Applies on all days.
 input string InpPairDayBlockedEntryHours = "EURAUD:4=14;NZDCAD:1=4;AUDCAD:5=5";    // InpPairDayBlockedEntryHours Optional. Format: "EURAUD:4=14;NZDCAD:1,3=6". Day: 1=Mon ... 5=Fri.
+input string InpPairAllowedEntryHours = "XAUUSD=8,9,10,11,12,13,14,15,16,17,18"; // Optional whitelist. If a symbol is listed here, new entries are allowed only in these server hours. Format: "XAUUSD=8,9,10".
+
 input group "=== Order Placement ==="
 input double InpLots                    = 0.10;
 input int    InpMaxSpreadPips           = 3;
@@ -94,22 +98,6 @@ input ENUM_COMMISSION_MODE InpCommissionMode = COMMISSION_OFF;
 input double InpCommissionPerLotRoundTurn = 0.0;  // Account currency per 1.00 lot, open+close. Example: 7.0 means 7 account-currency units per round turn lot.
 input double InpCommissionPerLotPerSide   = 0.0;  // Optional. If > 0, overrides half of round-turn value.
 input bool   InpUseCommissionInLotSizing  = true; // Adds estimated round-turn commission to SL risk per lot.
-
-
-input group "=== Macro / News Filter ==="
-input bool   InpUseMacroNewsFilter             = true;
-input bool   InpUseBacktestMacroWindows        = true;   // Tester mode: uses the hardcoded windows below.
-input bool   InpUseMql5CalendarLiveNews        = false;  // Live/forward mode: use the MT5 economic calendar.
-input bool   InpMacroBlockNewEntries           = true;
-input bool   InpMacroBlockGridAdds             = true;
-input int    InpMacroGridBlockMinNextLevel     = 2;      // 2 blocks L2/L3/L4 grid adds during macro windows.
-input int    InpCalendarEntryBlockBeforeHours  = 24;
-input int    InpCalendarEntryBlockAfterHours   = 6;
-input int    InpCalendarGridBlockBeforeHours   = 72;
-input int    InpCalendarGridBlockAfterHours    = 12;
-input int    InpCalendarMinImportance          = 2;      // 2=medium+, 3=high only depending on broker calendar feed.
-input string InpCalendarCurrenciesBySymbol     = "EURAUD=EUR,AUD,USD,CNY;NZDCAD=NZD,CAD,USD;AUDCAD=AUD,CAD,USD";
-input string InpBacktestMacroWindows           = "2025.04.18 00:00>2025.04.21 23:59|EURAUD|Easter_2025;2025.07.28 00:00>2025.07.30 23:59|EURAUD|AU_CPI_FOMC_2025_07;2025.09.08 00:00>2025.09.11 23:59|EURAUD|ECB_2025_09;2025.10.28 00:00>2025.10.30 23:59|EURAUD|ECB_2025_10;2025.12.20 00:00>2025.12.26 23:59|NZDCAD|YEAR_END_2025;2026.02.06 00:00>2026.02.06 23:59|EURAUD,AUDCAD|US_LABOR_CPI_RISK_2026_02;2026.03.04 00:00>2026.03.04 23:59|NZDCAD|CAD_US_SERVICES_RISK_2026_03;2026.04.02 00:00>2026.04.03 23:59|EURAUD|Easter_2026";
 
 input group "=== Signal Filters ==="
 input int    ATR_Period                 = 100;
@@ -225,6 +213,23 @@ input bool   InpMaxLevelExitStartsCooldown   = true;
 input int    InpMaxConcurrentBaskets    = 8;
 input double InpMaxOtherBasketDDPctBal  = 15.00;
 
+input group "=== XAUUSD Add-on Controls ==="
+input bool   InpUseXAUUSDControls        = true;
+input string InpXAUUSDCoreSymbol         = "XAUUSD";
+input double InpXAUUSDRiskMultiplier     = 0.70;  // InpXAUUSDRiskMultiplier - Multiplies normal risk. 0.70 with 0.50% baseline = 0.35% initial risk.
+input int    InpXAUUSDLotSizingStopPips  = 600;   // InpXAUUSDLotSizingStopPips - Caps the virtual SL distance used for XAU lot sizing only. 600 = 6.00 when XAU pip is 0.01. Does not place/modify the real SL.
+input double InpXAUUSDMinInitialLot       = 0.02;  // InpXAUUSDMinInitialLot - Optional floor for the first XAU basket order. Set 0.00 to disable.
+input double InpXAUUSDMaxInitialLot       = 0.20;  // InpXAUUSDMaxInitialLot - Safety cap for the first XAU basket order. Set 0.00 to disable.
+input int    InpXAUUSDMaxSpreadPips      = 35;    // InpXAUUSDMaxSpreadPips - XAU pip = 0.01 on most brokers. 35 = 0.35.
+input double InpXAUUSDMinRangeAtrPct     = 65.0;
+input int    InpXAUUSDMinStopDistancePips = 150;  // InpXAUUSDMinStopDistancePips - 150 = 1.50 when XAU pip is 0.01.
+input int    InpXAUUSDGridGapPips        = 250;   // InpXAUUSDGridGapPips - 250 = 2.50 when XAU pip is 0.01.
+input double InpXAUUSDGridGapMultiplier  = 1.35;
+input int    InpXAUUSDGridGapMaxPips     = 900;
+input int    InpXAUUSDGridMaxLevels      = 3;
+input double InpXAUUSDGridLotMultiplier  = 1.00;
+input double InpXAUUSDTakeProfitPctPrice = 0.07;
+
 input bool   InpBlockSharedCurrencies   = true;
 input bool   InpUseCorrelationGate      = true;
 input int    InpCorrelationBars         = 96;
@@ -247,7 +252,7 @@ input bool   Show_Yesterday_Lines       = true;
 input bool   Show_DaySeparator          = true;
 input bool   Show_AreaOfInterest        = true;
 input bool   Show_PendingMarkers        = true;
-input bool   InpShowPanel               = true;
+input bool   InpShowPanel               = false;
 input bool   InpStyleChart              = true;
 
 input color  Color_HO                   = clrMaroon;
@@ -275,7 +280,7 @@ color tmdOrange   = C'255,165,0';
 color tmdBid      = C'0,170,255';
 color tmdAsk      = C'255,120,0';
 
-string PREFIX = "TMD_";
+string PREFIX = "HOLOEA_";
 string g_panelObjs[];
 ulong  g_lastVisualRefreshMs = 0;
 datetime g_lastVisualBarTime = 0;
@@ -285,9 +290,6 @@ double g_maxGlobalDdMoney = 0.0;
 double g_maxGlobalDdPct   = 0.0;
 double g_closedBasketAgeHoursSum = 0.0;
 int    g_closedBasketAgeCount    = 0;
-datetime g_panelNewsLastCheck[];
-string   g_panelNewsLastText[];
-color    g_panelNewsLastColor[];
 
 struct SymbolState
 {
@@ -390,10 +392,10 @@ bool IsNewBarForSymbolTF(const string sym,
    return false;
 }
 
-void LogMsg(const ENUM_TMD_LOG_LEVEL level, const string msg)
+void LogMsg(const ENUM_HOLO_LOG_LEVEL level, const string msg)
 {
    if((int)InpLogLevel >= (int)level)
-      Print("[TMD] ", msg);
+      Print("[HOLO_EA] ", msg);
 }
 
 string Trim(const string s)
@@ -1144,63 +1146,119 @@ string QuoteCurrency(const string sym)
    return StringSubstr(core, 3, 3);
 }
 
+bool IsXAUUSDSymbol(const string sym)
+{
+   string core = SymbolBaseName(sym);
+   string xauCore = InpXAUUSDCoreSymbol;
+   StringToUpper(core);
+   StringToUpper(xauCore);
+   return (core == xauCore);
+}
+
 double RiskMultiplierForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return MathMax(0.0, InpXAUUSDRiskMultiplier);
    return 1.0;
 }
 
 int MaxSpreadPipsForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDMaxSpreadPips;
    return InpMaxSpreadPips;
 }
 
 double MinRangeAtrPctForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDMinRangeAtrPct;
    return InpMinRangeAtrPct;
 }
 
 int MinStopDistancePipsForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDMinStopDistancePips;
    return InpMinStopDistancePips;
 }
 
 int GridMaxLevelsForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return MathMax(1, InpXAUUSDGridMaxLevels);
    return InpGridMaxLevels;
 }
 
 int GridGapPipsForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDGridGapPips;
    return InpGridGapPips;
 }
 
 double GridGapMultiplierForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDGridGapMultiplier;
    return InpGridGapMultiplier;
 }
 
 int GridGapMaxPipsForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDGridGapMaxPips;
    return InpGridGapMaxPips;
 }
 
 double GridLotMultiplierForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDGridLotMultiplier;
    return InpGridLotMultiplier;
 }
 
 double GridTakeProfitPctForSymbol(const string sym)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+      return InpXAUUSDTakeProfitPctPrice;
    return InpGridTakeProfitPctPrice;
 }
 
+
 double LotSizingStopDistanceForSymbol(const string sym, const double rawStopDistance)
 {
-   return rawStopDistance;
+   double dist = rawStopDistance;
+
+   if(dist <= 0.0)
+      return dist;
+
+   // Gold daily high/low references can be very far from the pending entry.
+   // For grid baskets this is only a virtual sizing reference, not a real SL.
+   // Capping it prevents XAUUSD from always collapsing to the broker minimum lot.
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym) && InpXAUUSDLotSizingStopPips > 0)
+   {
+      double pip = PipSizeForSymbol(sym);
+      double cappedDist = InpXAUUSDLotSizingStopPips * pip;
+
+      if(cappedDist > 0.0 && dist > cappedDist)
+         dist = cappedDist;
+   }
+
+   return dist;
 }
 
 double ApplyInitialLotBoundsForSymbol(const string sym, double lots)
 {
+   if(InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+   {
+      if(InpXAUUSDMinInitialLot > 0.0 && lots < InpXAUUSDMinInitialLot)
+         lots = InpXAUUSDMinInitialLot;
+
+      if(InpXAUUSDMaxInitialLot > 0.0 && lots > InpXAUUSDMaxInitialLot)
+         lots = InpXAUUSDMaxInitialLot;
+   }
+
    return NormalizeLots(sym, lots);
 }
 
@@ -1815,6 +1873,19 @@ double CalculateLot(const string sym, double entryPrice, double stopPrice)
       return ApplyInitialLotBoundsForSymbol(sym, InpFallbackLot);
 
    double rawLots = riskMoney / costPerLot;
+
+   if(InpLogLevel >= LOG_DEBUG && InpUseXAUUSDControls && IsXAUUSDSymbol(sym))
+   {
+      double pip = PipSizeForSymbol(sym);
+      LogMsg(LOG_DEBUG,
+             StringFormat("XAU_LOT_SIZE | %s | riskMoney=%.2f | rawStopPips=%.1f | sizingStopPips=%.1f | costPerLot=%.2f | rawLots=%.4f",
+                          sym,
+                          riskMoney,
+                          (pip > 0.0 ? rawStopDistance / pip : 0.0),
+                          (pip > 0.0 ? stopDistance / pip : 0.0),
+                          costPerLot,
+                          rawLots));
+   }
 
    return ApplyInitialLotBoundsForSymbol(sym, rawLots);
 }
@@ -2552,9 +2623,9 @@ bool OpenGridLevel(const int basketIdx)
 
    bool ok = false;
    if(g_baskets[basketIdx].direction == POSITION_TYPE_BUY)
-      ok = trade.Buy(lots, sym, ask, 0.0, 0.0, StringFormat("TMD Grid L%d", g_baskets[basketIdx].levels + 1));
+      ok = trade.Buy(lots, sym, ask, 0.0, 0.0, StringFormat("HOLO Grid L%d", g_baskets[basketIdx].levels + 1));
    else if(g_baskets[basketIdx].direction == POSITION_TYPE_SELL)
-      ok = trade.Sell(lots, sym, bid, 0.0, 0.0, StringFormat("TMD Grid L%d", g_baskets[basketIdx].levels + 1));
+      ok = trade.Sell(lots, sym, bid, 0.0, 0.0, StringFormat("HOLO Grid L%d", g_baskets[basketIdx].levels + 1));
 
    if(ok)
    {
@@ -3099,16 +3170,6 @@ void ManageGridBasket()
       
       if(allowGridAdd && adversePips >= requiredGap)
       {
-         string macroGridReason = "";
-         int nextGridLevel = g_baskets[bi].levels + 1;
-         if(IsMacroNewsBlocked(sym, true, nextGridLevel, macroGridReason))
-         {
-            LogMsg(LOG_INFO,
-                   StringFormat("GRID_ADD_BLOCKED_BY_MACRO | %s | nextLevel=%d | %s",
-                                sym, nextGridLevel, macroGridReason));
-            continue;
-         }
-
          OpenGridLevel(bi);
       }
    }
@@ -3308,7 +3369,7 @@ void ManageEntries()
                             sellEntry,
                             pendingSellSL,
                             sellLots,
-                            "TMD SellStop");
+                            "HOLO SellStop");
 
       if(buyOk)
          EnsurePendingOrder(sym,
@@ -3316,7 +3377,7 @@ void ManageEntries()
                             buyEntry,
                             pendingBuySL,
                             buyLots,
-                            "TMD BuyStop");
+                            "HOLO BuyStop");
    }
 }
 
@@ -3530,77 +3591,83 @@ void CreatePanel()
 
    PanelDeleteAll();
 
-   int bgW = 980;
+   int bgW = 1235;
    int rows = ArraySize(g_states);
-   int bgH = 205 + rows * 18;
+   int bgH = 238 + rows * 18;
 
    CreatePanelRect("BG", 20, 30, bgW, bgH, tmdBg, tmdBg);
    CreatePanelRect("TB", 23, 33, bgW - 6, 28, tmdBg, tmdBg);
    CreatePanelRect("S1", 30, 67, bgW - 40, 1, tmdSubtleBg, tmdBg);
-   CreatePanelRect("S2", 30, 154, bgW - 40, 1, tmdSubtleBg, tmdBg);
+   CreatePanelRect("S2", 30, 153, bgW - 40, 1, tmdSubtleBg, tmdBg);
 
    CreatePanelLabel("ONLINE_DOT", 30, 40, 10, tmdGreen, "●");
    CreatePanelLabel("ONLINE_TXT", 44, 40, 9, C'0,180,180', "ONLINE");
-   CreatePanelLabel("SERVER", 115, 40, 9, tmdSilver, "--:--:--");
-   CreatePanelLabel("TITLE", 505, 38, 11, C'0,230,230', "◆ TMD ◆", ANCHOR_UPPER);
+   CreatePanelLabel("SERVER", 110, 40, 9, tmdSilver, "--:--:--");
+   CreatePanelLabel("TITLE", 595, 38, 11, C'0,230,230', "◆ HOLO EA MS ◆", ANCHOR_UPPER);
 
-   // Compact risk/account dashboard.
-   CreatePanelLabel("G1L", 30, 76, 8, C'70,90,110', "BAL / EQ");
-   CreatePanelLabel("G1V", 215, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G2L", 30, 92, 8, C'70,90,110', "FLOAT P/L");
-   CreatePanelLabel("G2V", 215, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G3L", 30, 108, 8, C'70,90,110', "DD CUR / MAX");
-   CreatePanelLabel("G3V", 215, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G4L", 30, 124, 8, C'70,90,110', "MARGIN");
-   CreatePanelLabel("G4V", 215, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G1L", 30, 76, 8, C'70,90,110', "BALANCE");
+   CreatePanelLabel("G1V", 180, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G2L", 30, 92, 8, C'70,90,110', "EQUITY");
+   CreatePanelLabel("G2V", 180, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G3L", 30, 108, 8, C'70,90,110', "P/L");
+   CreatePanelLabel("G3V", 180, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G10L", 30, 124, 8, C'70,90,110', "DD / MAX");
+   CreatePanelLabel("G10V", 180, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
 
-   CreatePanelLabel("G5L", 250, 76, 8, C'70,90,110', "BASKETS");
-   CreatePanelLabel("G5V", 455, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G6L", 250, 92, 8, C'70,90,110', "PEND / SYMBOLS");
-   CreatePanelLabel("G6V", 455, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G7L", 250, 108, 8, C'70,90,110', "WINDOW");
-   CreatePanelLabel("G7V", 455, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G8L", 250, 124, 8, C'70,90,110', "AVG HOLD");
-   CreatePanelLabel("G8V", 455, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G4L", 230, 76, 8, C'70,90,110', "GRID STATE");
+   CreatePanelLabel("G4V", 575, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G5L", 230, 92, 8, C'70,90,110', "WINDOW / COOLDOWN");
+   CreatePanelLabel("G5V", 575, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G6L", 230, 108, 8, C'70,90,110', "PENDINGS / SYMBOLS");
+   CreatePanelLabel("G6V", 575, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G11L", 230, 124, 8, C'70,90,110', "MARGIN LEVEL");
+   CreatePanelLabel("G11V", 575, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
 
-   CreatePanelLabel("G9L", 500, 76, 8, C'70,90,110', "RISK / LOT");
-   CreatePanelLabel("G9V", 730, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G10L", 500, 92, 8, C'70,90,110', "GRID");
-   CreatePanelLabel("G10V", 730, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G11L", 500, 108, 8, C'70,90,110', "NEWS FILTER");
-   CreatePanelLabel("G11V", 730, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
-   CreatePanelLabel("G12L", 500, 124, 8, C'70,90,110', "TIME FILTERS");
-   CreatePanelLabel("G12V", 950, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G7L", 625, 76, 8, C'70,90,110', "RISK / LOT");
+   CreatePanelLabel("G7V", 1070, 76, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G8L", 625, 92, 8, C'70,90,110', "GRID CFG");
+   CreatePanelLabel("G8V", 1070, 92, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G9L", 625, 108, 8, C'70,90,110', "LAST SL");
+   CreatePanelLabel("G9V", 1070, 108, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("G12L", 625, 124, 8, C'70,90,110', "AVG HOLD");
+   CreatePanelLabel("G12V", 1070, 124, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
 
-   CreatePanelLabel("SYMHDR", 30, 162, 9, C'180,40,220', "SYMBOL STATUS");
-   CreatePanelLabel("COL1", 30, 180, 8, C'70,90,110', "SYM");
-   CreatePanelLabel("COL2", 115, 180, 8, C'70,90,110', "SIGNAL");
-   CreatePanelLabel("COL3", 205, 180, 8, C'70,90,110', "GRID");
-   CreatePanelLabel("COL4", 275, 180, 8, C'70,90,110', "PEND");
-   CreatePanelLabel("COL5", 330, 180, 8, C'70,90,110', "P/L");
-   CreatePanelLabel("COL6", 410, 180, 8, C'70,90,110', "DD%");
-   CreatePanelLabel("COL7", 475, 180, 8, C'70,90,110', "TP%");
-   CreatePanelLabel("COL8", 540, 180, 8, C'70,90,110', "AGE");
-   CreatePanelLabel("COL9", 605, 180, 8, C'70,90,110', "SPR");
-   CreatePanelLabel("COL10", 665, 180, 8, C'70,90,110', "ATR");
-   CreatePanelLabel("COL11", 725, 180, 8, C'70,90,110', "NEWS");
-   CreatePanelLabel("COL12", 955, 180, 8, C'70,90,110', "STATE / REASON", ANCHOR_RIGHT_UPPER);
+   CreatePanelLabel("SYMHDR", 30, 162, 9, C'180,40,220', "SYMBOLS");
+   CreatePanelLabel("COL1", 120, 162, 8, C'70,90,110', "LEVELS");
+   CreatePanelLabel("COL2", 235, 162, 8, C'70,90,110', "PEND");
+   CreatePanelLabel("COL3", 305, 162, 8, C'70,90,110', "BUY");
+   CreatePanelLabel("COL4", 385, 162, 8, C'70,90,110', "SELL");
+   CreatePanelLabel("COL5", 470, 162, 8, C'70,90,110', "CD");
+   CreatePanelLabel("COL6", 540, 162, 8, C'70,90,110', "M15");
+   CreatePanelLabel("COL7", 615, 162, 8, C'70,90,110', "SPR");
+   CreatePanelLabel("COL8", 685, 162, 8, C'70,90,110', "ATR%");
+   CreatePanelLabel("COL9",  760, 162, 8, C'70,90,110', "PNL");
+   CreatePanelLabel("COL10", 830, 162, 8, C'70,90,110', "BPOS");
+   CreatePanelLabel("COL11", 890, 162, 8, C'70,90,110', "BAVG");
+   CreatePanelLabel("COL12", 970, 162, 8, C'70,90,110', "BDD%");
+   CreatePanelLabel("COL13", 1040, 162, 8, C'70,90,110', "TP%");
+   CreatePanelLabel("COL14", 1110, 162, 8, C'70,90,110', "AGEH");
+   CreatePanelLabel("COL15", 1210, 162, 8, C'70,90,110', "ACTIVE", ANCHOR_RIGHT_UPPER);
 
    for(int i = 0; i < rows; i++)
    {
-      int y = 198 + i * 18;
-      CreatePanelLabel("R_SYM_"  + IntegerToString(i), 30,  y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_SIG_"  + IntegerToString(i), 115, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_GRID_" + IntegerToString(i), 205, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_PND_"  + IntegerToString(i), 275, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_PNL_"  + IntegerToString(i), 330, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_DD_"   + IntegerToString(i), 410, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_TP_"   + IntegerToString(i), 475, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_AGE_"  + IntegerToString(i), 540, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_SPR_"  + IntegerToString(i), 605, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_ATR_"  + IntegerToString(i), 665, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_NEWS_" + IntegerToString(i), 725, y, 8, tmdSilver, "-");
-      CreatePanelLabel("R_ACT_"  + IntegerToString(i), 955, y, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
+      int y = 182 + i * 18;
+      CreatePanelLabel("R_SYM_" + IntegerToString(i), 30, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_LVL_" + IntegerToString(i), 120, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_PND_" + IntegerToString(i), 235, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_BUY_" + IntegerToString(i), 305, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_SEL_" + IntegerToString(i), 385, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_CD_" + IntegerToString(i), 470, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_M15_" + IntegerToString(i), 540, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_SPR_" + IntegerToString(i), 615, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_ATR_" + IntegerToString(i), 685, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_PNL_"  + IntegerToString(i), 760,  y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_BPOS_" + IntegerToString(i), 830,  y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_BAVG_" + IntegerToString(i), 890,  y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_BDD_"  + IntegerToString(i), 970,  y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_BTP_"  + IntegerToString(i), 1040, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_AGE_"  + IntegerToString(i), 1110, y, 8, tmdSilver, "-");
+      CreatePanelLabel("R_ACT_"  + IntegerToString(i), 1210, y, 8, tmdSilver, "-", ANCHOR_RIGHT_UPPER);
    }
 }
 
@@ -3817,236 +3884,6 @@ string BasketTpDistancePctText(const int basketIdx)
    return FormatPercent(pct);
 }
 
-
-int ActiveBasketIndexBySymbol(const string sym)
-{
-   for(int i = 0; i < ArraySize(g_baskets); i++)
-   {
-      if(g_baskets[i].active && g_baskets[i].symbol == sym)
-         return i;
-   }
-
-   return -1;
-}
-
-string DirectionShort(const int direction)
-{
-   if(direction == POSITION_TYPE_BUY)
-      return "B";
-   if(direction == POSITION_TYPE_SELL)
-      return "S";
-   return "-";
-}
-
-string PanelRiskModeText()
-{
-   if(InpRiskMode == RISK_LOW)
-      return "LOW";
-   if(InpRiskMode == RISK_HIGH)
-      return "HIGH";
-   return "MED";
-}
-
-string PanelMacroModeText()
-{
-   if(!InpUseMacroNewsFilter)
-      return "OFF";
-
-   string mode = "";
-   if(InpUseBacktestMacroWindows)
-      mode = "BT";
-   if(InpUseMql5CalendarLiveNews)
-      mode = (mode == "" ? "CAL" : mode + "+CAL");
-   if(mode == "")
-      mode = "ON";
-
-   string scope = "";
-   if(InpMacroBlockNewEntries)
-      scope += "E";
-   if(InpMacroBlockGridAdds)
-      scope += (scope == "" ? "" : "+") + "G>L" + IntegerToString(InpMacroGridBlockMinNextLevel - 1);
-
-   if(scope != "")
-      mode += " " + scope;
-
-   return mode;
-}
-
-color PanelMacroModeColor()
-{
-   if(!InpUseMacroNewsFilter)
-      return tmdRed;
-   if(InpUseMql5CalendarLiveNews)
-      return tmdGreen;
-   if(InpUseBacktestMacroWindows)
-      return tmdOrange;
-   return tmdSilver;
-}
-
-string PanelFilterSummaryText()
-{
-   string txt = "H:" + InpBlockedEntryHours;
-
-   if(InpPairBlockedEntryHours != "")
-      txt += " | Pair:" + InpPairBlockedEntryHours;
-
-   if(InpPairDayBlockedEntryHours != "")
-      txt += " | Day:" + InpPairDayBlockedEntryHours;
-
-   return FitPanelText(txt, 68);
-}
-
-string PanelGridText(const string sym)
-{
-   int bidx = ActiveBasketIndexBySymbol(sym);
-   if(bidx < 0)
-      return "-";
-
-   return DirectionShort(g_baskets[bidx].direction) + IntegerToString(g_baskets[bidx].levels)
-        + "/" + IntegerToString(GridMaxLevelsForSymbol(sym));
-}
-
-string PanelBasketStateText(const string sym)
-{
-   int bidx = ActiveBasketIndexBySymbol(sym);
-   if(bidx < 0)
-      return "-";
-
-   double ageH = BasketAgeHours(bidx);
-   string side = DirectionShort(g_baskets[bidx].direction);
-   string base = side + IntegerToString(g_baskets[bidx].levels);
-
-   if(ageH >= 24.0)
-      return "STALE " + base;
-
-   if(IsRecoveryRunnerBasket(bidx, 24.0))
-      return "RECOV " + base;
-
-   return "ACTIVE " + base;
-}
-
-string PanelSignalText(const int idx, color &clr)
-{
-   clr = tmdSilver;
-
-   if(idx < 0 || idx >= ArraySize(g_states))
-      return "-";
-
-   string sym = g_states[idx].symbol;
-
-   if(g_states[idx].spreadPips > MaxSpreadPipsForSymbol(sym))
-   {
-      clr = tmdRed;
-      return "SPREAD";
-   }
-
-   if(g_states[idx].buySignal)
-   {
-      clr = Color_LO;
-      return "BUY";
-   }
-
-   if(g_states[idx].sellSignal)
-   {
-      clr = Color_HO;
-      return "SELL";
-   }
-
-   clr = tmdSilver;
-   return "WAIT";
-}
-
-string PanelReasonText(const int idx)
-{
-   if(idx < 0 || idx >= ArraySize(g_states))
-      return "-";
-
-   int bidx = ActiveBasketIndexBySymbol(g_states[idx].symbol);
-   if(bidx >= 0)
-      return PanelBasketStateText(g_states[idx].symbol);
-
-   if(g_states[idx].buySignal || g_states[idx].sellSignal)
-      return "READY";
-
-   string buyR  = FitPanelText(g_states[idx].buyReason, 12);
-   string sellR = FitPanelText(g_states[idx].sellReason, 12);
-
-   if(buyR == "" && sellR == "")
-      return "-";
-
-   return FitPanelText("B:" + buyR + " S:" + sellR, 26);
-}
-
-string PanelNewsStatusText(const string sym, color &clr)
-{
-   clr = tmdGreen;
-
-   int idx = GetStateIndexBySymbol(sym);
-   if(ArraySize(g_panelNewsLastCheck) != ArraySize(g_states))
-   {
-      ArrayResize(g_panelNewsLastCheck, ArraySize(g_states));
-      ArrayResize(g_panelNewsLastText,  ArraySize(g_states));
-      ArrayResize(g_panelNewsLastColor, ArraySize(g_states));
-
-      for(int i = 0; i < ArraySize(g_panelNewsLastCheck); i++)
-      {
-         g_panelNewsLastCheck[i] = 0;
-         g_panelNewsLastText[i]  = "";
-         g_panelNewsLastColor[i] = tmdSilver;
-      }
-   }
-
-   datetime now = TimeCurrent();
-   if(idx >= 0 && idx < ArraySize(g_panelNewsLastCheck) &&
-      g_panelNewsLastCheck[idx] > 0 &&
-      (now - g_panelNewsLastCheck[idx]) < 60 &&
-      g_panelNewsLastText[idx] != "")
-   {
-      clr = g_panelNewsLastColor[idx];
-      return g_panelNewsLastText[idx];
-   }
-
-   string txt = "OK";
-
-   if(!InpUseMacroNewsFilter)
-   {
-      clr = tmdSilver;
-      txt = "OFF";
-   }
-   else
-   {
-      string reason = "";
-      if(IsMacroNewsBlocked(sym, false, 0, reason))
-      {
-         clr = tmdRed;
-         txt = "ENTRY";
-      }
-      else
-      {
-         int bidx = ActiveBasketIndexBySymbol(sym);
-         if(bidx >= 0)
-         {
-            int nextLevel = g_baskets[bidx].levels + 1;
-            if(nextLevel <= GridMaxLevelsForSymbol(sym) &&
-               IsMacroNewsBlocked(sym, true, nextLevel, reason))
-            {
-               clr = tmdOrange;
-               txt = "GRID";
-            }
-         }
-      }
-   }
-
-   if(idx >= 0 && idx < ArraySize(g_panelNewsLastCheck))
-   {
-      g_panelNewsLastCheck[idx] = now;
-      g_panelNewsLastText[idx]  = txt;
-      g_panelNewsLastColor[idx] = clr;
-   }
-
-   return txt;
-}
-
 void UpdatePanel()
 {
    if(!InpShowPanel)
@@ -4063,7 +3900,7 @@ void UpdatePanel()
    double avgHoldHrs  = AverageHoldingHours();
 
    color pnlClr = (pnl > 0.0 ? tmdGreen : (pnl < 0.0 ? tmdRed : tmdSilver));
-   color ddClr  = (ddMoney > 0.0 ? (ddPct >= 20.0 ? tmdRed : tmdOrange) : tmdGreen);
+   color ddClr  = (ddMoney > 0.0 ? tmdRed : tmdGreen);
 
    color marginClr = tmdSilver;
    if(marginLevel > 0.0)
@@ -4077,40 +3914,46 @@ void UpdatePanel()
    SetPanelText("ONLINE_DOT", "●", InpEnableEA ? tmdGreen : tmdRed);
    SetPanelText("ONLINE_TXT", InpEnableEA ? "ONLINE" : "OFFLINE", InpEnableEA ? C'0,180,180' : tmdRed);
 
-   SetPanelText("G1V", FormatMoney(bal) + " / " + FormatMoney(eq), tmdSilver);
-   SetPanelText("G2V", FormatMoney(pnl), pnlClr);
-   SetPanelText("G3V", FormatPercent(ddPct) + " / " + FormatPercent(g_maxGlobalDdPct), ddClr);
-   SetPanelText("G4V", (marginLevel > 0.0 ? FormatPercent(marginLevel) : "N/A"), marginClr);
+   SetPanelText("G1V", FormatMoney(bal), tmdSilver);
+   SetPanelText("G2V", FormatMoney(eq), tmdSilver);
+   SetPanelText("G3V", FormatMoney(pnl), pnlClr);
+   SetPanelText("G10V", FormatPercent(ddPct) + " / " + FormatPercent(g_maxGlobalDdPct), ddClr);
 
    string gridState = BasketSummaryText(InpMaxConcurrentBaskets);
-   color gridClr = (ActiveBasketCount() > 0 ? tmdOrange : tmdGreen);
-   SetPanelText("G5V", FitPanelText(gridState, 28), gridClr);
+   color gridClr = (ActiveBasketCount() > 0 ? tmdOrange : tmdSilver);
+   SetPanelText("G4V", FitPanelText(gridState, 46), gridClr);
+
+   string cdTxt = (IsTradingWindow() ? "OPEN" : "CLOSED");
+   if(IsCooldownActive())
+      cdTxt += " / COOLDOWN";
+   SetPanelText("G5V", cdTxt, IsCooldownActive() ? tmdOrange : (IsTradingWindow() ? tmdGreen : tmdRed));
+
    SetPanelText("G6V", IntegerToString(PendingCount()) + " / " + IntegerToString(ArraySize(g_states)), tmdSilver);
 
-   string windowTxt = (IsTradingWindow() ? "OPEN" : "CLOSED");
-   if(IsCooldownActive())
-      windowTxt += " / COOLDOWN";
-   SetPanelText("G7V", windowTxt, IsCooldownActive() ? tmdOrange : (IsTradingWindow() ? tmdGreen : tmdRed));
+   string marginTxt = (marginLevel > 0.0 ? FormatPercent(marginLevel) : "N/A");
+   SetPanelText("G11V", marginTxt, marginClr);
 
-   SetPanelText("G8V", (BasketPositionCount() > 0 ? FormatHours(avgHoldHrs, 1) : "-"), tmdSilver);
+   string riskModeTxt = "MED";
+   if(InpRiskMode == RISK_LOW)  riskModeTxt = "LOW";
+   if(InpRiskMode == RISK_HIGH) riskModeTxt = "HIGH";
 
-   SetPanelText("G9V",
-                StringFormat("%s %.2f%% / base %.2f",
-                             PanelRiskModeText(),
-                             GetRiskPercent(),
+   SetPanelText("G7V",
+                StringFormat("%s / SL-%s / base %.2f",
+                             riskModeTxt,
+                             (InpUseSLBasedLot ? "ON" : "OFF"),
                              InpLots),
                 tmdSilver);
 
-   SetPanelText("G10V",
-                StringFormat("gap %dp x%.2f | max L%d | TP %.2f%%",
+   SetPanelText("G8V",
+                StringFormat("gap %dp / max %d / x%.2f / baskets %d",
                              InpGridGapPips,
-                             InpGridLotMultiplier,
                              InpGridMaxLevels,
-                             InpGridTakeProfitPctPrice),
+                             InpGridLotMultiplier,
+                             InpMaxConcurrentBaskets),
                 tmdSilver);
 
-   SetPanelText("G11V", PanelMacroModeText(), PanelMacroModeColor());
-   SetPanelText("G12V", PanelFilterSummaryText(), tmdSilver);
+   SetPanelText("G9V", FitPanelText(g_lastSLReason, 56), tmdSilver);
+   SetPanelText("G12V", (BasketPositionCount() > 0 ? FormatHours(avgHoldHrs, 1) : "-"), tmdSilver);
 
    int rows = ArraySize(g_states);
    for(int i = 0; i < rows; i++)
@@ -4125,36 +3968,98 @@ void UpdatePanel()
       double basketTpPct = BasketTpDistancePct(i);
 
       color symPnlClr  = (symPnl > 0.0 ? tmdGreen : (symPnl < 0.0 ? tmdRed : tmdSilver));
-      color bddClr     = (basketDdPct > 0.0 ? (basketDdPct >= 5.0 ? tmdRed : tmdOrange) : tmdSilver);
-      color btpClr     = (basketTpPct >= 0.0 ? tmdOrange : tmdSilver);
+      color bddClr     = (basketDdPct > 0.0 ? tmdRed : tmdSilver);
+      color btpClr     = (basketTpPct > 0.0 ? tmdOrange : tmdSilver);
 
-      color sigClr;
-      string sigTxt    = PanelSignalText(i, sigClr);
-      string gridTxt   = PanelGridText(sym);
-      string pndTxt    = IntegerToString(PendingCount(sym));
+      string levels    = FitPanelText(FormatPrice(sym, g_states[i].hoH1) + " / " + FormatPrice(sym, g_states[i].loH1), 14);
+      string pnd       = IntegerToString(PendingCount(sym));
+      string buy       = (g_states[i].buySignal  ? "READY" : FitPanelText(g_states[i].buyReason,  9));
+      string sell      = (g_states[i].sellSignal ? "READY" : FitPanelText(g_states[i].sellReason, 9));
+      string cd        = (IsCooldownActive() ? "YES" : "-");
+      string m15       = StringFormat("S:%s B:%s",
+                                      (g_states[i].sellM15Ok ? "Y" : "N"),
+                                      (g_states[i].buyM15Ok  ? "Y" : "N"));
+      string spr       = FormatPips(g_states[i].spreadPips);
+      string atr       = DoubleToString(g_states[i].rangeAtrPct, 0);
       string pnlTxt    = FormatMoney(symPnl);
-      string ddTxt     = BasketFloatingDDPctText(sym);
-      string tpTxt     = BasketTpDistancePctText(i);
+      string bposTxt   = IntegerToString(basketPos);
+      string bavgTxt   = BasketAvgEntryText(sym);
+      string bddTxt    = BasketFloatingDDPctText(sym);
+      string btpTxt    = BasketTpDistancePctText(i);
       string ageTxt    = BasketAgeHoursText(i);
-      string sprTxt    = FormatPips(g_states[i].spreadPips);
-      string atrTxt    = DoubleToString(g_states[i].rangeAtrPct, 0);
-      string reasonTxt = PanelReasonText(i);
 
-      color newsClr;
-      string newsTxt = PanelNewsStatusText(sym, newsClr);
+      string state = "WAIT";
+      color stateClr = tmdSilver;
 
-      SetPanelText("R_SYM_"  + IntegerToString(i), sym, tmdSilver);
-      SetPanelText("R_SIG_"  + IntegerToString(i), sigTxt, sigClr);
-      SetPanelText("R_GRID_" + IntegerToString(i), gridTxt, basketPos > 0 ? tmdOrange : tmdSilver);
-      SetPanelText("R_PND_"  + IntegerToString(i), pndTxt, PendingCount(sym) > 0 ? tmdOrange : tmdSilver);
-      SetPanelText("R_PNL_"  + IntegerToString(i), pnlTxt, symPnlClr);
-      SetPanelText("R_DD_"   + IntegerToString(i), ddTxt, bddClr);
-      SetPanelText("R_TP_"   + IntegerToString(i), tpTxt, btpClr);
-      SetPanelText("R_AGE_"  + IntegerToString(i), ageTxt, basketPos > 0 ? tmdOrange : tmdSilver);
-      SetPanelText("R_SPR_"  + IntegerToString(i), sprTxt, g_states[i].spreadPips > MaxSpreadPipsForSymbol(sym) ? tmdRed : tmdSilver);
-      SetPanelText("R_ATR_"  + IntegerToString(i), atrTxt, g_states[i].rangeAtrPct >= MinRangeAtrPctForSymbol(sym) ? tmdGreen : tmdSilver);
-      SetPanelText("R_NEWS_" + IntegerToString(i), newsTxt, newsClr);
-      SetPanelText("R_ACT_"  + IntegerToString(i), reasonTxt, basketPos > 0 ? tmdOrange : tmdSilver);
+      if(g_states[i].sellSignal)
+      {
+         state = "SELL";
+         stateClr = Color_HO;
+      }
+      else if(g_states[i].buySignal)
+      {
+         state = "BUY";
+         stateClr = Color_LO;
+      }
+      else if(g_states[i].spreadPips > MaxSpreadPipsForSymbol(sym))
+      {
+         state = "SPREAD";
+         stateClr = tmdRed;
+      }
+
+      string activeTxt = "-";
+      color activeClr  = tmdSilver;
+
+      int bidx = i;
+      if(bidx >= 0 && bidx < ArraySize(g_baskets) && g_baskets[bidx].active)
+      {
+         bool staleMode   = (BasketAgeHours(bidx) >= 24.0);
+         bool recoverMode = IsRecoveryRunnerBasket(bidx, 24.0);
+
+         if(staleMode)
+         {
+            activeTxt = "STALE "
+                      + (g_baskets[bidx].direction == POSITION_TYPE_BUY ? "B" : "S")
+                      + IntegerToString(g_baskets[bidx].levels);
+            activeClr = tmdRed;
+         }
+         else if(recoverMode)
+         {
+            activeTxt = "RECOV "
+                      + (g_baskets[bidx].direction == POSITION_TYPE_BUY ? "B" : "S")
+                      + IntegerToString(g_baskets[bidx].levels);
+            activeClr = tmdGreen;
+         }
+         else
+         {
+            activeTxt = "GRID "
+                      + (g_baskets[bidx].direction == POSITION_TYPE_BUY ? "B" : "S")
+                      + IntegerToString(g_baskets[bidx].levels);
+            activeClr = tmdOrange;
+         }
+      }
+      else if(HasOpenPosition(sym))
+      {
+         activeTxt = "LIVE";
+         activeClr = tmdGreen;
+      }
+
+      SetPanelText("R_SYM_" + IntegerToString(i), sym, activeClr == tmdSilver ? tmdSilver : activeClr);
+      SetPanelText("R_LVL_" + IntegerToString(i), levels, tmdSilver);
+      SetPanelText("R_PND_" + IntegerToString(i), pnd, PendingCount(sym) > 0 ? tmdOrange : tmdSilver);
+      SetPanelText("R_BUY_" + IntegerToString(i), buy, g_states[i].buySignal ? Color_LO : tmdSilver);
+      SetPanelText("R_SEL_" + IntegerToString(i), sell, g_states[i].sellSignal ? Color_HO : tmdSilver);
+      SetPanelText("R_CD_" + IntegerToString(i), cd, IsCooldownActive() ? tmdOrange : tmdSilver);
+      SetPanelText("R_M15_" + IntegerToString(i), m15, tmdSilver);
+      SetPanelText("R_SPR_" + IntegerToString(i), spr, g_states[i].spreadPips > MaxSpreadPipsForSymbol(sym) ? tmdRed : tmdSilver);
+      SetPanelText("R_ATR_" + IntegerToString(i), atr, g_states[i].rangeAtrPct >= MinRangeAtrPctForSymbol(sym) ? tmdGreen : tmdSilver);
+      SetPanelText("R_PNL_"  + IntegerToString(i), pnlTxt,  symPnlClr);
+      SetPanelText("R_BPOS_" + IntegerToString(i), bposTxt, basketPos > 0 ? tmdOrange : tmdSilver);
+      SetPanelText("R_BAVG_" + IntegerToString(i), bavgTxt, basketPos > 0 ? tmdSilver : tmdSilver);
+      SetPanelText("R_BDD_"  + IntegerToString(i), bddTxt,  bddClr);
+      SetPanelText("R_BTP_"  + IntegerToString(i), btpTxt,  btpClr);
+      SetPanelText("R_AGE_"  + IntegerToString(i), ageTxt,  basketPos > 0 ? tmdOrange : tmdSilver);
+      SetPanelText("R_ACT_"  + IntegerToString(i), activeTxt, activeClr);
    }
 }
 
@@ -4249,6 +4154,54 @@ bool SymbolMatchesBlockingRule(const string sym, const string ruleSymRaw)
    return false;
 }
 
+bool HasPairAllowedHourRule(const string sym, string &hoursOut)
+{
+   hoursOut = "";
+
+   string rules = InpPairAllowedEntryHours;
+   StringReplace(rules, " ", "");
+
+   if(rules == "")
+      return false;
+
+   string entries[];
+   int count = StringSplit(rules, ';', entries);
+
+   for(int i = 0; i < count; i++)
+   {
+      string rule = entries[i];
+      if(rule == "")
+         continue;
+
+      int eq = StringFind(rule, "=");
+      if(eq <= 0)
+      {
+         PrintFormat("Invalid pair allowed entry rule ignored: %s", rule);
+         continue;
+      }
+
+      string ruleSym = StringSubstr(rule, 0, eq);
+      string hours   = StringSubstr(rule, eq + 1);
+
+      if(SymbolMatchesBlockingRule(sym, ruleSym))
+      {
+         hoursOut = hours;
+         return true;
+      }
+   }
+
+   return false;
+}
+
+bool IsPairAllowedEntryHour(const string sym, const int hour)
+{
+   string hours = "";
+   if(!HasPairAllowedHourRule(sym, hours))
+      return true;
+
+   return CsvIntListContains(hours, hour);
+}
+
 bool IsPairBlockedByHourRules(const string sym, const int hour)
 {
    string rules = InpPairBlockedEntryHours;
@@ -4330,245 +4283,6 @@ bool IsPairBlockedByDayHourRules(const string sym, const int dayOfWeek, const in
    return false;
 }
 
-
-bool SymbolListContains(string list, const string sym)
-{
-   StringReplace(list, " ", "");
-   if(list == "")
-      return false;
-
-   string parts[];
-   int count = StringSplit(list, ',', parts);
-
-   for(int i = 0; i < count; i++)
-   {
-      if(parts[i] == "")
-         continue;
-      if(SymbolMatchesBlockingRule(sym, parts[i]))
-         return true;
-   }
-
-   return false;
-}
-
-bool CurrencyListContains(string list, const string ccyRaw)
-{
-   string ccy = ccyRaw;
-   StringToUpper(ccy);
-   StringReplace(list, " ", "");
-
-   if(list == "" || ccy == "")
-      return false;
-
-   string parts[];
-   int count = StringSplit(list, ',', parts);
-
-   for(int i = 0; i < count; i++)
-   {
-      string p = parts[i];
-      StringToUpper(p);
-      if(p == ccy)
-         return true;
-   }
-
-   return false;
-}
-
-bool GetCalendarCurrenciesForSymbol(const string sym, string &currenciesOut)
-{
-   currenciesOut = "";
-
-   string rules = InpCalendarCurrenciesBySymbol;
-   StringReplace(rules, " ", "");
-
-   if(rules != "")
-   {
-      string entries[];
-      int count = StringSplit(rules, ';', entries);
-
-      for(int i = 0; i < count; i++)
-      {
-         string rule = entries[i];
-         if(rule == "")
-            continue;
-
-         int eq = StringFind(rule, "=");
-         if(eq <= 0)
-            continue;
-
-         string ruleSym = StringSubstr(rule, 0, eq);
-         string ccys    = StringSubstr(rule, eq + 1);
-
-         if(SymbolMatchesBlockingRule(sym, ruleSym))
-         {
-            currenciesOut = ccys;
-            return true;
-         }
-      }
-   }
-
-   string base  = BaseCurrency(sym);
-   string quote = QuoteCurrency(sym);
-
-   if(base != "" && quote != "")
-   {
-      currenciesOut = base + "," + quote + ",USD";
-      return true;
-   }
-
-   return false;
-}
-
-bool IsHardcodedMacroWindowBlocked(const string sym, string &reason)
-{
-   reason = "";
-
-   if(!InpUseBacktestMacroWindows || InpBacktestMacroWindows == "")
-      return false;
-
-   datetime now = TimeCurrent();
-
-   string rules = InpBacktestMacroWindows;
-   string entries[];
-   int count = StringSplit(rules, ';', entries);
-
-   for(int i = 0; i < count; i++)
-   {
-      string rule = Trim(entries[i]);
-      if(rule == "")
-         continue;
-
-      int p1 = StringFind(rule, "|");
-      if(p1 <= 0)
-      {
-         PrintFormat("Invalid hardcoded macro rule ignored: %s", rule);
-         continue;
-      }
-
-      int p2 = StringFind(rule, "|", p1 + 1);
-      if(p2 <= p1)
-      {
-         PrintFormat("Invalid hardcoded macro rule ignored: %s", rule);
-         continue;
-      }
-
-      string timeRange = StringSubstr(rule, 0, p1);
-      string symbols   = StringSubstr(rule, p1 + 1, p2 - p1 - 1);
-      string tag       = StringSubstr(rule, p2 + 1);
-
-      if(!SymbolListContains(symbols, sym))
-         continue;
-
-      int arrow = StringFind(timeRange, ">");
-      if(arrow <= 0)
-      {
-         PrintFormat("Invalid hardcoded macro time range ignored: %s", rule);
-         continue;
-      }
-
-      datetime fromTime = StringToTime(StringSubstr(timeRange, 0, arrow));
-      datetime toTime   = StringToTime(StringSubstr(timeRange, arrow + 1));
-
-      if(fromTime <= 0 || toTime <= 0)
-      {
-         PrintFormat("Invalid hardcoded macro date ignored: %s", rule);
-         continue;
-      }
-
-      if(now >= fromTime && now <= toTime)
-      {
-         reason = StringFormat("hardcoded macro window %s [%s]", sym, tag);
-         return true;
-      }
-   }
-
-   return false;
-}
-
-bool IsMql5CalendarNewsBlocked(const string sym,
-                               const bool forGridAdd,
-                               string &reason)
-{
-   reason = "";
-
-   if(!InpUseMql5CalendarLiveNews)
-      return false;
-
-   string ccys = "";
-   if(!GetCalendarCurrenciesForSymbol(sym, ccys))
-      return false;
-
-   datetime now = TimeCurrent();
-   int beforeH = (forGridAdd ? InpCalendarGridBlockBeforeHours : InpCalendarEntryBlockBeforeHours);
-   int afterH  = (forGridAdd ? InpCalendarGridBlockAfterHours  : InpCalendarEntryBlockAfterHours);
-
-   datetime fromTime = now - beforeH * 3600;
-   datetime toTime   = now + afterH * 3600;
-
-   MqlCalendarValue values[];
-   int count = CalendarValueHistory(values, fromTime, toTime);
-
-   if(count <= 0)
-      return false;
-
-   for(int i = 0; i < count; i++)
-   {
-      MqlCalendarEvent event;
-      if(!CalendarEventById(values[i].event_id, event))
-         continue;
-
-      if((int)event.importance < InpCalendarMinImportance)
-         continue;
-
-      MqlCalendarCountry country;
-      if(!CalendarCountryById(event.country_id, country))
-         continue;
-
-      string eventCurrency = country.currency;
-      StringToUpper(eventCurrency);
-
-      if(!CurrencyListContains(ccys, eventCurrency))
-         continue;
-
-      reason = StringFormat("calendar news %s | %s | %s", sym, eventCurrency, event.name);
-      return true;
-   }
-
-   return false;
-}
-
-bool IsMacroNewsBlocked(const string sym,
-                        const bool forGridAdd,
-                        const int nextGridLevel,
-                        string &reason)
-{
-   reason = "";
-
-   if(!InpUseMacroNewsFilter)
-      return false;
-
-   if(forGridAdd)
-   {
-      if(!InpMacroBlockGridAdds)
-         return false;
-      if(nextGridLevel < InpMacroGridBlockMinNextLevel)
-         return false;
-   }
-   else
-   {
-      if(!InpMacroBlockNewEntries)
-         return false;
-   }
-
-   if(IsHardcodedMacroWindowBlocked(sym, reason))
-      return true;
-
-   if(IsMql5CalendarNewsBlocked(sym, forGridAdd, reason))
-      return true;
-
-   return false;
-}
-
 bool IsBlockedEntryForSymbol(const string sym, string &reason)
 {
    reason = "";
@@ -4581,6 +4295,14 @@ bool IsBlockedEntryForSymbol(const string sym, string &reason)
 
    if(hour < 0 || hour > 23)
       return false;
+
+   if(!IsPairAllowedEntryHour(sym, hour))
+   {
+      string allowedHours = "";
+      HasPairAllowedHourRule(sym, allowedHours);
+      reason = StringFormat("pair allowed-hours filter %s hour %d not in [%s]", sym, hour, allowedHours);
+      return true;
+   }
 
    if(g_blockedEntryHours[hour])
    {
@@ -4597,13 +4319,6 @@ bool IsBlockedEntryForSymbol(const string sym, string &reason)
    if(IsPairBlockedByDayHourRules(sym, dow, hour))
    {
       reason = StringFormat("pair/day blocked hour %s day %d hour %d", sym, dow, hour);
-      return true;
-   }
-
-   string macroReason = "";
-   if(IsMacroNewsBlocked(sym, false, 0, macroReason))
-   {
-      reason = macroReason;
       return true;
    }
 
@@ -4654,7 +4369,11 @@ int OnInit()
 {
    
    ParseBlockedEntryHours();
-
+   MqlCalendarValue values[];
+   int count = CalendarValueHistory(values, TimeCurrent()-3600, TimeCurrent()+3600);
+   
+   Print("NEWS EVENTS FOUND: ", count);
+   
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpDeviationPoints);
 
@@ -4670,17 +4389,15 @@ int OnInit()
    RefreshVisualLayer(true);
    EventSetTimer(1);
    LogMsg(LOG_INFO,
-          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s | macroFilter=%s | hardcodedMacro=%s | liveCalendar=%s",
+          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | xauControls=%s | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s",
                        ArraySize(g_states),
                        (int)InpCommissionMode,
                        InpCommissionPerLotRoundTurn,
                        InpCommissionPerLotPerSide,
+                       (InpUseXAUUSDControls ? "true" : "false"),
                        InpBrokerSymbolPrefix,
                        InpBrokerSymbolSuffix,
-                       (InpAutoDetectBrokerSymbols ? "true" : "false"),
-                       (InpUseMacroNewsFilter ? "true" : "false"),
-                       (InpUseBacktestMacroWindows ? "true" : "false"),
-                       (InpUseMql5CalendarLiveNews ? "true" : "false")));
+                       (InpAutoDetectBrokerSymbols ? "true" : "false")));
    return INIT_SUCCEEDED;
 }
 
