@@ -2,7 +2,7 @@
 //|                                      TMD26_EA_MT5_multisymbol_grid|
 //+------------------------------------------------------------------+
 #property copyright "MDV"
-#property version   "1.33"
+#property version   "1.34"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -98,7 +98,8 @@ input bool   InpUseCommissionInLotSizing  = true; // Adds estimated round-turn c
 
 input group "=== Macro / News Filter ==="
 input bool   InpUseMacroNewsFilter             = true;
-input bool   InpUseBacktestMacroWindows        = true;   // Tester mode: uses the hardcoded windows below.
+input bool   InpUseBacktestMacroWindows        = true;   // InpUseBacktestMacroWindows - Tester mode.
+input bool   InpUseBuiltInBacktestMacroWindows = true;   // InpUseBuiltInBacktestMacroWindows - Uses built-in validated windows. Safer than long input strings in tester/set files.
 input bool   InpUseMql5CalendarLiveNews        = false;  // Live/forward mode: use the MT5 economic calendar.
 input bool   InpMacroBlockNewEntries           = true;
 input bool   InpMacroBlockGridAdds             = true;
@@ -107,9 +108,17 @@ input int    InpCalendarEntryBlockBeforeHours  = 24;
 input int    InpCalendarEntryBlockAfterHours   = 6;
 input int    InpCalendarGridBlockBeforeHours   = 72;
 input int    InpCalendarGridBlockAfterHours    = 12;
+input bool   InpUseLongCentralBankBlackout        = true;
+input string InpLongCentralBankCurrencies         = "CAD,NZD,AUD";
+input int    InpCentralBankEntryBlockBeforeDays   = 5;    // Business days before event
+input int    InpCentralBankGridBlockBeforeDays    = 5;    // Business days before event
+input int    InpCentralBankBlockAfterHours        = 12;
+input int    InpCentralBankGridBlockMinNextLevel  = 2;    // Block L2/L3/L4 grid adds
 input int    InpCalendarMinImportance          = 2;      // 2=medium+, 3=high only depending on broker calendar feed.
 input string InpCalendarCurrenciesBySymbol     = "EURAUD=EUR,AUD,USD,CNY;NZDCAD=NZD,CAD,USD;AUDCAD=AUD,CAD,USD";
-input string InpBacktestMacroWindows           = "2025.04.18 00:00>2025.04.21 23:59|EURAUD|Easter_2025;2025.07.28 00:00>2025.07.30 23:59|EURAUD|AU_CPI_FOMC_2025_07;2025.09.08 00:00>2025.09.11 23:59|EURAUD|ECB_2025_09;2025.10.28 00:00>2025.10.30 23:59|EURAUD|ECB_2025_10;2025.12.20 00:00>2025.12.26 23:59|NZDCAD|YEAR_END_2025;2026.02.06 00:00>2026.02.06 23:59|EURAUD,AUDCAD|US_LABOR_CPI_RISK_2026_02;2026.03.04 00:00>2026.03.04 23:59|NZDCAD|CAD_US_SERVICES_RISK_2026_03;2026.04.02 00:00>2026.04.03 23:59|EURAUD|Easter_2026";
+// Optional extra tester windows. Use || as separator, not semicolon, because .set/report handling can truncate strings at semicolons.
+// Format: yyyy.mm.dd hh:mi>yyyy.mm.dd hh:mi|SYMBOL1,SYMBOL2|TAG||yyyy.mm.dd hh:mi>yyyy.mm.dd hh:mi|SYMBOL|TAG
+input string InpBacktestMacroWindows           = "";
 
 input group "=== Signal Filters ==="
 input int    ATR_Period                 = 100;
@@ -4419,65 +4428,94 @@ bool GetCalendarCurrenciesForSymbol(const string sym, string &currenciesOut)
    return false;
 }
 
-bool IsHardcodedMacroWindowBlocked(const string sym, string &reason)
+bool IsMacroWindowRuleActive(const string sym,
+                             const string rule,
+                             string &reason)
 {
    reason = "";
 
-   if(!InpUseBacktestMacroWindows || InpBacktestMacroWindows == "")
+   string cleanRule = Trim(rule);
+   if(cleanRule == "")
       return false;
 
-   datetime now = TimeCurrent();
-
-   string rules = InpBacktestMacroWindows;
-   string entries[];
-   int count = StringSplit(rules, ';', entries);
-
-   for(int i = 0; i < count; i++)
+   int p1 = StringFind(cleanRule, "|");
+   if(p1 <= 0)
    {
-      string rule = Trim(entries[i]);
-      if(rule == "")
-         continue;
+      PrintFormat("Invalid macro rule ignored: %s", cleanRule);
+      return false;
+   }
 
-      int p1 = StringFind(rule, "|");
-      if(p1 <= 0)
+   int p2 = StringFind(cleanRule, "|", p1 + 1);
+   if(p2 <= p1)
+   {
+      PrintFormat("Invalid macro rule ignored: %s", cleanRule);
+      return false;
+   }
+
+   string timeRange = StringSubstr(cleanRule, 0, p1);
+   string symbols   = StringSubstr(cleanRule, p1 + 1, p2 - p1 - 1);
+   string tag       = StringSubstr(cleanRule, p2 + 1);
+
+   if(!SymbolListContains(symbols, sym))
+      return false;
+
+   int arrow = StringFind(timeRange, ">");
+   if(arrow <= 0)
+   {
+      PrintFormat("Invalid macro time range ignored: %s", cleanRule);
+      return false;
+   }
+
+   datetime fromTime = StringToTime(StringSubstr(timeRange, 0, arrow));
+   datetime toTime   = StringToTime(StringSubstr(timeRange, arrow + 1));
+
+   if(fromTime <= 0 || toTime <= 0)
+   {
+      PrintFormat("Invalid macro date ignored: %s", cleanRule);
+      return false;
+   }
+
+   datetime now = TimeCurrent();
+   if(now >= fromTime && now <= toTime)
+   {
+      reason = StringFormat("macro window %s [%s]", sym, tag);
+      return true;
+   }
+
+   return false;
+}
+
+bool IsBuiltInBacktestMacroWindowBlocked(const string sym, string &reason)
+{
+   reason = "";
+
+   if(!InpUseBuiltInBacktestMacroWindows)
+      return false;
+
+   // Built-in windows are intentionally hardcoded for repeatable MT5 tester work.
+   // This avoids losing rules when .set files / reports truncate semicolon-separated input strings.
+   // The 2026.02 windows were added after real-tick testing: OHLC allowed a small L1 exit on 2026.02.06,
+   // while real ticks kept the EURAUD buy basket open into L4 and a large loss.
+   string rules[] =
+   {
+      "2025.04.18 00:00>2025.04.21 23:59|EURAUD|Easter_2025",
+      "2025.07.28 00:00>2025.07.30 23:59|EURAUD|AU_CPI_FOMC_2025_07",
+      "2025.09.08 00:00>2025.09.11 23:59|EURAUD|ECB_2025_09",
+      "2025.10.28 00:00>2025.10.30 23:59|EURAUD|ECB_2025_10",
+      "2025.12.20 00:00>2025.12.26 23:59|NZDCAD|YEAR_END_2025",
+      "2026.02.02 00:00>2026.02.03 23:59|EURAUD,AUDCAD|RBA_RATE_DECISION_2026_02",
+      "2026.02.05 00:00>2026.02.11 23:59|EURAUD,AUDCAD|ECB_US_JOBS_DELAY_REAL_TICK_2026_02",
+      "2026.03.04 00:00>2026.03.04 23:59|NZDCAD|CAD_US_SERVICES_RISK_2026_03",
+      "2026.04.02 00:00>2026.04.03 23:59|EURAUD|Easter_2026",
+      "2026.01.20 00:00>2026.01.29 23:59|NZDCAD,AUDCAD|BOC_MPR_2026_01",
+      "2026.01.01 00:00>2026.01.10 23:59|AUDCAD,NZDCAD|NEW_YEAR_CAD_2026"
+   };
+
+   for(int i = 0; i < ArraySize(rules); i++)
+   {
+      if(IsMacroWindowRuleActive(sym, rules[i], reason))
       {
-         PrintFormat("Invalid hardcoded macro rule ignored: %s", rule);
-         continue;
-      }
-
-      int p2 = StringFind(rule, "|", p1 + 1);
-      if(p2 <= p1)
-      {
-         PrintFormat("Invalid hardcoded macro rule ignored: %s", rule);
-         continue;
-      }
-
-      string timeRange = StringSubstr(rule, 0, p1);
-      string symbols   = StringSubstr(rule, p1 + 1, p2 - p1 - 1);
-      string tag       = StringSubstr(rule, p2 + 1);
-
-      if(!SymbolListContains(symbols, sym))
-         continue;
-
-      int arrow = StringFind(timeRange, ">");
-      if(arrow <= 0)
-      {
-         PrintFormat("Invalid hardcoded macro time range ignored: %s", rule);
-         continue;
-      }
-
-      datetime fromTime = StringToTime(StringSubstr(timeRange, 0, arrow));
-      datetime toTime   = StringToTime(StringSubstr(timeRange, arrow + 1));
-
-      if(fromTime <= 0 || toTime <= 0)
-      {
-         PrintFormat("Invalid hardcoded macro date ignored: %s", rule);
-         continue;
-      }
-
-      if(now >= fromTime && now <= toTime)
-      {
-         reason = StringFormat("hardcoded macro window %s [%s]", sym, tag);
+         reason = "built-in " + reason;
          return true;
       }
    }
@@ -4485,8 +4523,167 @@ bool IsHardcodedMacroWindowBlocked(const string sym, string &reason)
    return false;
 }
 
+bool IsExtraBacktestMacroWindowBlocked(const string sym, string &reason)
+{
+   reason = "";
+
+   if(InpBacktestMacroWindows == "")
+      return false;
+
+   // Prefer || as separator. Backward-compatible semicolon support is kept.
+   // Internally normalize both to semicolon and parse one complete rule per item.
+   string rules = InpBacktestMacroWindows;
+   StringReplace(rules, "||", ";");
+
+   string entries[];
+   int count = StringSplit(rules, ';', entries);
+
+   for(int i = 0; i < count; i++)
+   {
+      if(IsMacroWindowRuleActive(sym, entries[i], reason))
+      {
+         reason = "extra " + reason;
+         return true;
+      }
+   }
+
+   return false;
+}
+
+bool IsHardcodedMacroWindowBlocked(const string sym, string &reason)
+{
+   reason = "";
+
+   if(!InpUseBacktestMacroWindows)
+      return false;
+
+   if(IsBuiltInBacktestMacroWindowBlocked(sym, reason))
+      return true;
+
+   if(IsExtraBacktestMacroWindowBlocked(sym, reason))
+      return true;
+
+   return false;
+}
+bool IsLongCentralBankCurrency(const string ccy)
+{
+   string list = InpLongCentralBankCurrencies;
+   StringReplace(list, " ", "");
+   StringToUpper(list);
+
+   string x = ccy;
+   StringToUpper(x);
+
+   return CurrencyListContains(list, x);
+}
+
+bool IsCentralBankEventName(string name)
+{
+   StringToUpper(name);
+
+   if(StringFind(name, "INTEREST RATE") >= 0)          return true;
+   if(StringFind(name, "RATE DECISION") >= 0)          return true;
+   if(StringFind(name, "RATE STATEMENT") >= 0)         return true;
+   if(StringFind(name, "MONETARY POLICY") >= 0)        return true;
+   if(StringFind(name, "POLICY RATE") >= 0)            return true;
+   if(StringFind(name, "OVERNIGHT RATE") >= 0)         return true;
+   if(StringFind(name, "CASH RATE") >= 0)              return true;
+   if(StringFind(name, "OCR") >= 0)                    return true; // RBNZ Official Cash Rate
+   if(StringFind(name, "MPR") >= 0)                    return true; // Monetary Policy Report
+   if(StringFind(name, "PRESS CONFERENCE") >= 0)       return true;
+
+   return false;
+}
+
+datetime AddBusinessDays(datetime startTime, int businessDays)
+{
+   datetime t = startTime;
+   int added = 0;
+
+   while(added < businessDays)
+   {
+      t += 86400;
+
+      MqlDateTime dt;
+      TimeToStruct(t, dt);
+
+      if(dt.day_of_week >= 1 && dt.day_of_week <= 5)
+         added++;
+   }
+
+   return t;
+}
+
+datetime SubtractBusinessDays(datetime startTime, int businessDays)
+{
+   datetime t = startTime;
+   int subtracted = 0;
+
+   while(subtracted < businessDays)
+   {
+      t -= 86400;
+
+      MqlDateTime dt;
+      TimeToStruct(t, dt);
+
+      if(dt.day_of_week >= 1 && dt.day_of_week <= 5)
+         subtracted++;
+   }
+
+   return t;
+}
+
+bool IsLongCentralBankBlackoutEvent(const string sym,
+                                    const bool forGridAdd,
+                                    const int nextGridLevel,
+                                    const string eventCurrency,
+                                    const string eventName,
+                                    const datetime eventTime,
+                                    string &reason)
+{
+   reason = "";
+
+   if(!InpUseLongCentralBankBlackout)
+      return false;
+
+   if(!IsLongCentralBankCurrency(eventCurrency))
+      return false;
+
+   if(!IsCentralBankEventName(eventName))
+      return false;
+
+   if(forGridAdd && nextGridLevel < InpCentralBankGridBlockMinNextLevel)
+      return false;
+
+   string ccys = "";
+   if(!GetCalendarCurrenciesForSymbol(sym, ccys))
+      return false;
+
+   if(!CurrencyListContains(ccys, eventCurrency))
+      return false;
+
+   datetime now = TimeCurrent();
+
+   int beforeDays = forGridAdd ? InpCentralBankGridBlockBeforeDays
+                               : InpCentralBankEntryBlockBeforeDays;
+
+   datetime blackoutStart = SubtractBusinessDays(eventTime, beforeDays);
+   datetime blackoutEnd   = eventTime + InpCentralBankBlockAfterHours * 3600;
+
+   if(now >= blackoutStart && now <= blackoutEnd)
+   {
+      reason = StringFormat("long CB blackout %s | %s | %s",
+                            sym,
+                            eventCurrency,
+                            eventName);
+      return true;
+   }
+
+   return false;
+}
 bool IsMql5CalendarNewsBlocked(const string sym,
                                const bool forGridAdd,
+                               const int nextGridLevel,
                                string &reason)
 {
    reason = "";
@@ -4499,11 +4696,24 @@ bool IsMql5CalendarNewsBlocked(const string sym,
       return false;
 
    datetime now = TimeCurrent();
-   int beforeH = (forGridAdd ? InpCalendarGridBlockBeforeHours : InpCalendarEntryBlockBeforeHours);
-   int afterH  = (forGridAdd ? InpCalendarGridBlockAfterHours  : InpCalendarEntryBlockAfterHours);
 
-   datetime fromTime = now - beforeH * 3600;
-   datetime toTime   = now + afterH * 3600;
+   int normalBeforeH = forGridAdd ? InpCalendarGridBlockBeforeHours
+                                  : InpCalendarEntryBlockBeforeHours;
+
+   int normalAfterH  = forGridAdd ? InpCalendarGridBlockAfterHours
+                                  : InpCalendarEntryBlockAfterHours;
+
+   int cbBeforeDays = forGridAdd ? InpCentralBankGridBlockBeforeDays
+                                 : InpCentralBankEntryBlockBeforeDays;
+
+   // Search far enough into the future to catch long central-bank blackout events.
+   datetime normalFrom = now - normalAfterH * 3600;
+   datetime normalTo   = now + normalBeforeH * 3600;
+
+   datetime cbTo = AddBusinessDays(now, cbBeforeDays) + 86400;
+
+   datetime fromTime = normalFrom;
+   datetime toTime   = MathMax(normalTo, cbTo);
 
    MqlCalendarValue values[];
    int count = CalendarValueHistory(values, fromTime, toTime);
@@ -4517,9 +4727,6 @@ bool IsMql5CalendarNewsBlocked(const string sym,
       if(!CalendarEventById(values[i].event_id, event))
          continue;
 
-      if((int)event.importance < InpCalendarMinImportance)
-         continue;
-
       MqlCalendarCountry country;
       if(!CalendarCountryById(event.country_id, country))
          continue;
@@ -4530,8 +4737,37 @@ bool IsMql5CalendarNewsBlocked(const string sym,
       if(!CurrencyListContains(ccys, eventCurrency))
          continue;
 
-      reason = StringFormat("calendar news %s | %s | %s", sym, eventCurrency, event.name);
-      return true;
+      datetime eventTime = values[i].time;
+
+      // 1) Special long central-bank blackout for CAD/NZD/AUD.
+      string cbReason = "";
+      if(IsLongCentralBankBlackoutEvent(sym,
+                                        forGridAdd,
+                                        nextGridLevel,
+                                        eventCurrency,
+                                        event.name,
+                                        eventTime,
+                                        cbReason))
+      {
+         reason = cbReason;
+         return true;
+      }
+
+      // 2) Normal medium/high impact news block.
+      if((int)event.importance < InpCalendarMinImportance)
+         continue;
+
+      datetime normalStart = eventTime - normalBeforeH * 3600;
+      datetime normalEnd   = eventTime + normalAfterH * 3600;
+
+      if(now >= normalStart && now <= normalEnd)
+      {
+         reason = StringFormat("calendar news %s | %s | %s",
+                               sym,
+                               eventCurrency,
+                               event.name);
+         return true;
+      }
    }
 
    return false;
@@ -4563,7 +4799,7 @@ bool IsMacroNewsBlocked(const string sym,
    if(IsHardcodedMacroWindowBlocked(sym, reason))
       return true;
 
-   if(IsMql5CalendarNewsBlocked(sym, forGridAdd, reason))
+   if(IsMql5CalendarNewsBlocked(sym, forGridAdd,nextGridLevel, reason))
       return true;
 
    return false;
@@ -4670,7 +4906,7 @@ int OnInit()
    RefreshVisualLayer(true);
    EventSetTimer(1);
    LogMsg(LOG_INFO,
-          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s | macroFilter=%s | hardcodedMacro=%s | liveCalendar=%s",
+          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s | macroFilter=%s | hardcodedMacro=%s | builtInMacro=%s | liveCalendar=%s",
                        ArraySize(g_states),
                        (int)InpCommissionMode,
                        InpCommissionPerLotRoundTurn,
