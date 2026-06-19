@@ -2,7 +2,7 @@
 //|                                      TMD26_EA_MT5_multisymbol_grid|
 //+------------------------------------------------------------------+
 #property copyright "MDV"
-#property version   "1.34"
+#property version   "1.35"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -98,27 +98,26 @@ input bool   InpUseCommissionInLotSizing  = true; // Adds estimated round-turn c
 
 input group "=== Macro / News Filter ==="
 input bool   InpUseMacroNewsFilter             = true;
-input bool   InpUseBacktestMacroWindows        = true;   // InpUseBacktestMacroWindows - Tester mode.
-input bool   InpUseBuiltInBacktestMacroWindows = true;   // InpUseBuiltInBacktestMacroWindows - Uses built-in validated windows. Safer than long input strings in tester/set files.
-input bool   InpUseMql5CalendarLiveNews        = false;  // Live/forward mode: use the MT5 economic calendar.
+input bool   InpUseCsvCalendarBacktest         = true;   // Tester mode: read historical calendar from CSV in MQL5\Files or Common\Files.
+input bool   InpUseMql5CalendarLiveNews        = false;  // Live/forward mode: use the MT5 Economic Calendar.
+input string InpCsvCalendarFile                = "TMD_NewsCalendar_20250101.csv";
+input bool   InpCsvCalendarUseCommonFolder     = true;
 input bool   InpMacroBlockNewEntries           = true;
 input bool   InpMacroBlockGridAdds             = true;
-input int    InpMacroGridBlockMinNextLevel     = 2;      // 2 blocks L2/L3/L4 grid adds during macro windows.
-input int    InpCalendarEntryBlockBeforeHours  = 24;
-input int    InpCalendarEntryBlockAfterHours   = 6;
-input int    InpCalendarGridBlockBeforeHours   = 72;
-input int    InpCalendarGridBlockAfterHours    = 12;
-input bool   InpUseLongCentralBankBlackout        = true;
-input string InpLongCentralBankCurrencies         = "CAD,NZD,AUD";
-input int    InpCentralBankEntryBlockBeforeDays   = 5;    // Business days before event
-input int    InpCentralBankGridBlockBeforeDays    = 5;    // Business days before event
-input int    InpCentralBankBlockAfterHours        = 12;
-input int    InpCentralBankGridBlockMinNextLevel  = 2;    // Block L2/L3/L4 grid adds
-input int    InpCalendarMinImportance          = 2;      // 2=medium+, 3=high only depending on broker calendar feed.
+input int    InpMacroGridBlockMinNextLevel     = 2;      // 2 blocks L2/L3/L4 grid adds during news windows.
+input int    InpCalendarEntryBlockBeforeHours  = 4;
+input int    InpCalendarEntryBlockAfterHours   = 1;
+input int    InpCalendarGridBlockBeforeHours   = 12;
+input int    InpCalendarGridBlockAfterHours    = 2;
+input bool   InpUseLongCentralBankBlackout     = true;
+input string InpLongCentralBankCurrencies      = "CAD,NZD,AUD";
+input int    InpCentralBankEntryBlockBeforeDays= 5;      // Business days before CAD/NZD/AUD central-bank event.
+input int    InpCentralBankGridBlockBeforeDays = 5;      // Business days before CAD/NZD/AUD central-bank event.
+input int    InpCentralBankBlockAfterHours     = 12;
+input int    InpCentralBankGridBlockMinNextLevel = 2;    // Block L2/L3/L4 grid adds.
+input int    InpCalendarMinImportance          = 3;      // 0=all, 1=low+, 2=medium+, 3=high.
 input string InpCalendarCurrenciesBySymbol     = "EURAUD=EUR,AUD,USD,CNY;NZDCAD=NZD,CAD,USD;AUDCAD=AUD,CAD,USD";
-// Optional extra tester windows. Use || as separator, not semicolon, because .set/report handling can truncate strings at semicolons.
-// Format: yyyy.mm.dd hh:mi>yyyy.mm.dd hh:mi|SYMBOL1,SYMBOL2|TAG||yyyy.mm.dd hh:mi>yyyy.mm.dd hh:mi|SYMBOL|TAG
-input string InpBacktestMacroWindows           = "";
+
 
 input group "=== Signal Filters ==="
 input int    ATR_Period                 = 100;
@@ -256,7 +255,7 @@ input bool   Show_Yesterday_Lines       = true;
 input bool   Show_DaySeparator          = true;
 input bool   Show_AreaOfInterest        = true;
 input bool   Show_PendingMarkers        = true;
-input bool   InpShowPanel               = true;
+input bool   InpShowPanel               = false;
 input bool   InpStyleChart              = true;
 
 input color  Color_HO                   = clrMaroon;
@@ -297,6 +296,18 @@ int    g_closedBasketAgeCount    = 0;
 datetime g_panelNewsLastCheck[];
 string   g_panelNewsLastText[];
 color    g_panelNewsLastColor[];
+
+struct NewsCalendarEvent
+{
+   datetime time;
+   string   currency;
+   int      importance;
+   string   name;
+   string   country;
+};
+
+NewsCalendarEvent g_newsEvents[];
+bool g_csvCalendarLoaded = false;
 
 struct SymbolState
 {
@@ -3862,8 +3873,8 @@ string PanelMacroModeText()
       return "OFF";
 
    string mode = "";
-   if(InpUseBacktestMacroWindows)
-      mode = "BT";
+   if(InpUseCsvCalendarBacktest)
+      mode = "CSV";
    if(InpUseMql5CalendarLiveNews)
       mode = (mode == "" ? "CAL" : mode + "+CAL");
    if(mode == "")
@@ -3887,8 +3898,8 @@ color PanelMacroModeColor()
       return tmdRed;
    if(InpUseMql5CalendarLiveNews)
       return tmdGreen;
-   if(InpUseBacktestMacroWindows)
-      return tmdOrange;
+   if(InpUseCsvCalendarBacktest)
+      return (g_csvCalendarLoaded ? tmdOrange : tmdRed);
    return tmdSilver;
 }
 
@@ -4428,94 +4439,183 @@ bool GetCalendarCurrenciesForSymbol(const string sym, string &currenciesOut)
    return false;
 }
 
-bool IsMacroWindowRuleActive(const string sym,
-                             const string rule,
-                             string &reason)
+string NormalizeCalendarDateTimeString(string value)
+{
+   string s = Trim(value);
+   StringReplace(s, "-", ".");
+   StringReplace(s, "T", " ");
+   StringReplace(s, "Z", "");
+
+   int dot = StringFind(s, ".");
+   if(dot == 4 && StringLen(s) >= 16)
+      return StringSubstr(s, 0, 16);
+
+   return s;
+}
+
+int ParseCalendarImportance(string value)
+{
+   string s = Trim(value);
+   StringToUpper(s);
+
+   if(s == "" || s == "NONE") return 0;
+   if(s == "LOW")             return 1;
+   if(s == "MEDIUM" || s == "MODERATE") return 2;
+   if(s == "HIGH")            return 3;
+
+   int v = (int)StringToInteger(s);
+   if(v < 0) v = 0;
+   if(v > 3) v = 3;
+   return v;
+}
+
+bool IsCsvHeaderRow(string firstColumn)
+{
+   string s = Trim(firstColumn);
+   StringToUpper(s);
+   return (StringFind(s, "TIME") >= 0 || StringFind(s, "DATE") >= 0);
+}
+
+bool LoadCsvCalendarEvents()
+{
+   ArrayResize(g_newsEvents, 0);
+   g_csvCalendarLoaded = false;
+
+   if(!InpUseCsvCalendarBacktest)
+      return true;
+
+   int flags = FILE_READ | FILE_CSV | FILE_ANSI;
+   if(InpCsvCalendarUseCommonFolder)
+      flags |= FILE_COMMON;
+
+   int handle = FileOpen(InpCsvCalendarFile, flags, ',');
+   if(handle == INVALID_HANDLE)
+   {
+      LogMsg(LOG_ERROR,
+             StringFormat("CSV calendar not found: %s | commonFolder=%s. News filter will not block historical tester events until the CSV is exported.",
+                          InpCsvCalendarFile,
+                          (InpCsvCalendarUseCommonFolder ? "true" : "false")));
+      return false;
+   }
+
+   int rows = 0;
+   int loaded = 0;
+
+   while(!FileIsEnding(handle))
+   {
+      string timeStr = FileReadString(handle);
+      if(FileIsEnding(handle) && Trim(timeStr) == "")
+         break;
+
+      string currency = FileReadString(handle);
+      string impStr   = FileReadString(handle);
+      string name     = FileReadString(handle);
+      string country  = FileReadString(handle);
+
+      rows++;
+
+      if(rows == 1 && IsCsvHeaderRow(timeStr))
+         continue;
+
+      timeStr  = NormalizeCalendarDateTimeString(timeStr);
+      currency = Trim(currency);
+      StringToUpper(currency);
+      name     = Trim(name);
+      country  = Trim(country);
+
+      datetime eventTime = StringToTime(timeStr);
+      if(eventTime <= 0 || currency == "" || name == "")
+         continue;
+
+      int idx = ArraySize(g_newsEvents);
+      ArrayResize(g_newsEvents, idx + 1);
+      g_newsEvents[idx].time       = eventTime;
+      g_newsEvents[idx].currency   = currency;
+      g_newsEvents[idx].importance = ParseCalendarImportance(impStr);
+      g_newsEvents[idx].name       = name;
+      g_newsEvents[idx].country    = country;
+      loaded++;
+   }
+
+   FileClose(handle);
+
+   g_csvCalendarLoaded = true;
+   LogMsg(LOG_INFO,
+          StringFormat("CSV calendar loaded: %s | events=%d | rows=%d | commonFolder=%s",
+                       InpCsvCalendarFile,
+                       loaded,
+                       rows,
+                       (InpCsvCalendarUseCommonFolder ? "true" : "false")));
+   return true;
+}
+
+bool IsCsvCalendarNewsBlocked(const string sym,
+                              const bool forGridAdd,
+                              const int nextGridLevel,
+                              string &reason)
 {
    reason = "";
 
-   string cleanRule = Trim(rule);
-   if(cleanRule == "")
+   if(!InpUseCsvCalendarBacktest || !g_csvCalendarLoaded)
       return false;
 
-   int p1 = StringFind(cleanRule, "|");
-   if(p1 <= 0)
-   {
-      PrintFormat("Invalid macro rule ignored: %s", cleanRule);
+   string ccys = "";
+   if(!GetCalendarCurrenciesForSymbol(sym, ccys))
       return false;
-   }
-
-   int p2 = StringFind(cleanRule, "|", p1 + 1);
-   if(p2 <= p1)
-   {
-      PrintFormat("Invalid macro rule ignored: %s", cleanRule);
-      return false;
-   }
-
-   string timeRange = StringSubstr(cleanRule, 0, p1);
-   string symbols   = StringSubstr(cleanRule, p1 + 1, p2 - p1 - 1);
-   string tag       = StringSubstr(cleanRule, p2 + 1);
-
-   if(!SymbolListContains(symbols, sym))
-      return false;
-
-   int arrow = StringFind(timeRange, ">");
-   if(arrow <= 0)
-   {
-      PrintFormat("Invalid macro time range ignored: %s", cleanRule);
-      return false;
-   }
-
-   datetime fromTime = StringToTime(StringSubstr(timeRange, 0, arrow));
-   datetime toTime   = StringToTime(StringSubstr(timeRange, arrow + 1));
-
-   if(fromTime <= 0 || toTime <= 0)
-   {
-      PrintFormat("Invalid macro date ignored: %s", cleanRule);
-      return false;
-   }
 
    datetime now = TimeCurrent();
-   if(now >= fromTime && now <= toTime)
+
+   int normalBeforeH = forGridAdd ? InpCalendarGridBlockBeforeHours
+                                  : InpCalendarEntryBlockBeforeHours;
+
+   int normalAfterH  = forGridAdd ? InpCalendarGridBlockAfterHours
+                                  : InpCalendarEntryBlockAfterHours;
+
+   int cbBeforeDays = forGridAdd ? InpCentralBankGridBlockBeforeDays
+                                 : InpCentralBankEntryBlockBeforeDays;
+
+   datetime fromTime = now - normalAfterH * 3600;
+   datetime normalTo = now + normalBeforeH * 3600;
+   datetime cbTo     = AddBusinessDays(now, cbBeforeDays) + 86400;
+   datetime toTime   = normalTo;
+   if(cbTo > toTime)
+      toTime = cbTo;
+
+   for(int i = 0; i < ArraySize(g_newsEvents); i++)
    {
-      reason = StringFormat("macro window %s [%s]", sym, tag);
-      return true;
-   }
+      datetime eventTime = g_newsEvents[i].time;
+      if(eventTime < fromTime || eventTime > toTime)
+         continue;
 
-   return false;
-}
+      string eventCurrency = g_newsEvents[i].currency;
+      if(!CurrencyListContains(ccys, eventCurrency))
+         continue;
 
-bool IsBuiltInBacktestMacroWindowBlocked(const string sym, string &reason)
-{
-   reason = "";
-
-   if(!InpUseBuiltInBacktestMacroWindows)
-      return false;
-
-   // Built-in windows are intentionally hardcoded for repeatable MT5 tester work.
-   // This avoids losing rules when .set files / reports truncate semicolon-separated input strings.
-   // The 2026.02 windows were added after real-tick testing: OHLC allowed a small L1 exit on 2026.02.06,
-   // while real ticks kept the EURAUD buy basket open into L4 and a large loss.
-   string rules[] =
-   {
-      "2025.04.18 00:00>2025.04.21 23:59|EURAUD|Easter_2025",
-      "2025.07.28 00:00>2025.07.30 23:59|EURAUD|AU_CPI_FOMC_2025_07",
-      "2025.09.08 00:00>2025.09.11 23:59|EURAUD|ECB_2025_09",
-      "2025.10.28 00:00>2025.10.30 23:59|EURAUD|ECB_2025_10",
-      "2025.12.20 00:00>2025.12.26 23:59|NZDCAD|YEAR_END_2025",
-      "2026.02.02 00:00>2026.02.03 23:59|EURAUD,AUDCAD|RBA_RATE_DECISION_2026_02",
-      "2026.02.05 00:00>2026.02.11 23:59|EURAUD,AUDCAD|ECB_US_JOBS_DELAY_REAL_TICK_2026_02",
-      "2026.03.04 00:00>2026.03.04 23:59|NZDCAD|CAD_US_SERVICES_RISK_2026_03",
-      "2026.04.02 00:00>2026.04.03 23:59|EURAUD|Easter_2026",
-      "2026.01.20 00:00>2026.01.29 23:59|NZDCAD,AUDCAD|BOC_MPR_2026_01",
-      "2026.01.01 00:00>2026.01.10 23:59|AUDCAD,NZDCAD|NEW_YEAR_CAD_2026"
-   };
-
-   for(int i = 0; i < ArraySize(rules); i++)
-   {
-      if(IsMacroWindowRuleActive(sym, rules[i], reason))
+      string cbReason = "";
+      if(IsLongCentralBankBlackoutEvent(sym,
+                                        forGridAdd,
+                                        nextGridLevel,
+                                        eventCurrency,
+                                        g_newsEvents[i].name,
+                                        eventTime,
+                                        cbReason))
       {
-         reason = "built-in " + reason;
+         reason = "csv " + cbReason;
+         return true;
+      }
+
+      if(g_newsEvents[i].importance < InpCalendarMinImportance)
+         continue;
+
+      datetime normalStart = eventTime - normalBeforeH * 3600;
+      datetime normalEnd   = eventTime + normalAfterH * 3600;
+
+      if(now >= normalStart && now <= normalEnd)
+      {
+         reason = StringFormat("csv news %s | %s | %s",
+                               sym,
+                               eventCurrency,
+                               g_newsEvents[i].name);
          return true;
       }
    }
@@ -4523,48 +4623,6 @@ bool IsBuiltInBacktestMacroWindowBlocked(const string sym, string &reason)
    return false;
 }
 
-bool IsExtraBacktestMacroWindowBlocked(const string sym, string &reason)
-{
-   reason = "";
-
-   if(InpBacktestMacroWindows == "")
-      return false;
-
-   // Prefer || as separator. Backward-compatible semicolon support is kept.
-   // Internally normalize both to semicolon and parse one complete rule per item.
-   string rules = InpBacktestMacroWindows;
-   StringReplace(rules, "||", ";");
-
-   string entries[];
-   int count = StringSplit(rules, ';', entries);
-
-   for(int i = 0; i < count; i++)
-   {
-      if(IsMacroWindowRuleActive(sym, entries[i], reason))
-      {
-         reason = "extra " + reason;
-         return true;
-      }
-   }
-
-   return false;
-}
-
-bool IsHardcodedMacroWindowBlocked(const string sym, string &reason)
-{
-   reason = "";
-
-   if(!InpUseBacktestMacroWindows)
-      return false;
-
-   if(IsBuiltInBacktestMacroWindowBlocked(sym, reason))
-      return true;
-
-   if(IsExtraBacktestMacroWindowBlocked(sym, reason))
-      return true;
-
-   return false;
-}
 bool IsLongCentralBankCurrency(const string ccy)
 {
    string list = InpLongCentralBankCurrencies;
@@ -4796,10 +4854,10 @@ bool IsMacroNewsBlocked(const string sym,
          return false;
    }
 
-   if(IsHardcodedMacroWindowBlocked(sym, reason))
+   if(IsCsvCalendarNewsBlocked(sym, forGridAdd, nextGridLevel, reason))
       return true;
 
-   if(IsMql5CalendarNewsBlocked(sym, forGridAdd,nextGridLevel, reason))
+   if(IsMql5CalendarNewsBlocked(sym, forGridAdd, nextGridLevel, reason))
       return true;
 
    return false;
@@ -4897,6 +4955,8 @@ int OnInit()
    if(!ParseSymbols())
       return INIT_FAILED;
 
+   LoadCsvCalendarEvents();
+
    ResetAllBasketStates();
 
    StyleChart();
@@ -4906,7 +4966,7 @@ int OnInit()
    RefreshVisualLayer(true);
    EventSetTimer(1);
    LogMsg(LOG_INFO,
-          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s | macroFilter=%s | hardcodedMacro=%s | builtInMacro=%s | liveCalendar=%s",
+          StringFormat("EA initialized symbols=%d | commissionMode=%d | commissionRT=%.2f | commissionSide=%.2f | brokerPrefix='%s' | brokerSuffix='%s' | autoDetect=%s | macroFilter=%s | csvCalendar=%s loaded=%s events=%d | liveCalendar=%s",
                        ArraySize(g_states),
                        (int)InpCommissionMode,
                        InpCommissionPerLotRoundTurn,
@@ -4915,7 +4975,9 @@ int OnInit()
                        InpBrokerSymbolSuffix,
                        (InpAutoDetectBrokerSymbols ? "true" : "false"),
                        (InpUseMacroNewsFilter ? "true" : "false"),
-                       (InpUseBacktestMacroWindows ? "true" : "false"),
+                       (InpUseCsvCalendarBacktest ? "true" : "false"),
+                       (g_csvCalendarLoaded ? "true" : "false"),
+                       ArraySize(g_newsEvents),
                        (InpUseMql5CalendarLiveNews ? "true" : "false")));
    return INIT_SUCCEEDED;
 }
